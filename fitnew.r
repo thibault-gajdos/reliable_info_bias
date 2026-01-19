@@ -1,3 +1,155 @@
+
+################################################################################
+## 1. PREPARE ENVIRONMENT & DATA
+################################################################################
+# rm(list=ls(all=TRUE)) 
+library(tidyverse)
+library(posterior)
+library(bayesplot)
+library(cmdstanr)
+
+# Update this path to your actual data location
+data_path <- '/Users/imogen/Documents/GitHub/reliable_info_bias/data/data_priorbelief_aware_red_exp12.rdata'
+load(data_path)
+
+## Recode Data
+# Choice: blue -> 1, red -> 2
+# Feedback: blue correct -> 1, red correct -> 0
+data <- data %>%
+  mutate(choice = case_when(
+    (ResponseButtonOrder == 1 & Response == 0) ~ 2,
+    (ResponseButtonOrder == 1 & Response == 1) ~ 1,
+    (ResponseButtonOrder == 0 & Response == 0) ~ 1,
+    (ResponseButtonOrder == 0 & Response == 1) ~ 2
+  )) %>%
+  mutate_at(vars(starts_with("color")), ~ ifelse(. == "blue", 1, 2)) %>%
+  rowwise() %>%
+  mutate(sample_number = sum(!is.na(c_across(starts_with("proba_"))))) %>%
+  ungroup() %>%
+  # IMPORTANT: Feedback must represent the TRUE state (1 for Blue, 0 for Red)
+  # Ensure 'CorrectResponse == 1' identifies Blue as the true outcome in your data
+  mutate(feedback = ifelse(CorrectResponse == 1, 1, 0)) 
+
+################################################################################
+## 2. ORGANIZE DATA ARRAYS
+################################################################################
+N <- length(unique(data$ParticipantPrivateID))
+T_max <- max(data$TrialNumber)
+I_max <- max(data$sample_number)
+subjs <- unique(data$ParticipantPrivateID)
+
+# Trial counts per subject
+d_counts <- data %>%
+  group_by(ParticipantPrivateID) %>%
+  summarise(t_subjs = n())
+t_subjs <- d_counts$t_subjs
+
+# Initialize arrays with neutral/padding values
+choice   <- array(-1, c(N, T_max))
+color    <- array( 1, c(N, T_max, I_max)) # Default color 1 (Blue)
+proba    <- array( 0, c(N, T_max, I_max)) # 0 probability for empty samples
+sample   <- array( 0, c(N, T_max))
+feedback <- array(-1, c(N, T_max))        # -1 indicates no feedback (padding)
+
+for (n in 1:N) {
+  t <- t_subjs[n]
+  data_subj <- data %>% filter(ParticipantPrivateID == subjs[n])
+  
+  choice[n, 1:t]   <- data_subj$choice
+  feedback[n, 1:t] <- data_subj$feedback
+  
+  for (k in 1:t) {
+    curr_trial     <- data_subj[k,]
+    sample[n, k]   <- curr_trial$sample_number
+    
+    for (i in 1:curr_trial$sample_number) {
+      color_var <- paste0("color_", i)
+      proba_var <- paste0("proba_", i)
+      
+      color[n, k, i] <- curr_trial[[color_var]]
+      proba[n, k, i] <- curr_trial[[proba_var]] / 100
+    }
+  }
+}
+
+data_list <- list(
+  N = N,
+  T_max = T_max,
+  I_max = I_max,
+  Tsubj = t_subjs,
+  color = color,
+  proba = proba,
+  choice = choice,
+  sample = sample,
+  feedback = feedback,
+  grainsize = 5
+)
+
+################################################################################
+## 3. COMPILE & FIT MODEL
+################################################################################
+# Update working directory to where your .stan file lives
+setwd("/Users/imogen/Documents/GitHub/reliable_info_bias")
+
+model <- cmdstan_model(
+  stan_file = './stan/log_trunc_simplified_boost_learning.stan', 
+  cpp_options = list(stan_threads = TRUE),
+  stanc_options = list("O1")
+)
+
+fit <- model$sample(
+  data = data_list,
+  seed = 4321,
+  chains = 4,
+  parallel_chains = 4,
+  threads_per_chain = 4, # Total cores used = 16
+  iter_warmup = 1000,
+  iter_sampling = 1000,
+  max_treedepth = 12,
+  adapt_delta = 0.90
+)
+
+################################################################################
+## 4. DIAGNOSTICS & SAVING
+################################################################################
+# Check convergence for group-level parameters
+print(fit$summary(variables = c("mu_pr", "sigma_pr")))
+
+# Check the specific "Advanced Learning" parameters
+# mu_pr[6]=delta_B, mu_pr[7]=delta_R, mu_pr[8]=kappa
+print(fit$summary(variables = c("mu_alpha", "mu_beta", "mu_delta_B", "mu_delta_R", "mu_kappa")))
+
+# Compute LOO
+loo_result <- fit$loo(cores = 4)
+print(loo_result)
+
+# Save results
+dir.create('./results/fits/exp12/', recursive = TRUE, showWarnings = FALSE)
+save(fit, file = './results/fits/exp12/fit_trunc_simplified_boost_learning_aware_red_exp12.rdata')
+save(loo, file = './results/loo/loo_trunc_simplified_boost_learning_aware_red_exp12.rdata')
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 #rm(list=ls(all=TRUE))  ## efface les données
 #source('~/thib/projects/tools/R_lib.r')
 #setwd('~/thib/projects/reliable_info')
@@ -11,7 +163,7 @@ library(bayesplot)
 ##################################################
 
 # 1. Provide the FULL path directly to the file:
-load('/Users/imogen/Documents/GitHub/reliable_info/data/data_priorbelief_unaware_exp11.rdata')
+load('/Users/imogen/Documents/GitHub/reliable_info/data/data_priorbelief_aware_red_exp12.rdata')
 ##load(file = './data/data_reliability_Exp2.rdata')
 
 ## if Response ResponseButtonOrder= 1: blue->1, red->0
