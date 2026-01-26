@@ -1216,3 +1216,376 @@ p <- ggplot(df_plot, aes(x = value)) +
   )
 
 print(p)
+
+
+
+
+
+
+library(tidyverse)
+library(posterior)
+library(bayesplot)
+library(ggplot2)
+
+# =====================================================================
+# 1. SETUP & DATA LOADING
+# =====================================================================
+
+fit_path <- "/Users/bty615/Documents/GitHub/reliable_info_bias/results/fits/Exp12/fit_trunc_simplified_boost_learning_aware_exp11.rdata"
+load(fit_path)
+
+# CmdStanR draws
+posterior_draws <- fit$draws()
+
+# ---------------------------------------------------------------------
+# PARAMETER INDEX MAP (from Stan model)
+# mu_pr[1] = alpha
+# mu_pr[2] = beta
+# mu_pr[3] = lambda
+# mu_pr[4] = theta
+# mu_pr[5] = psi
+# mu_pr[6] = delta
+# mu_pr[7] = kappa
+# ---------------------------------------------------------------------
+
+target_mu_params <- c(
+  "mu_pr[1]",  # alpha
+  "mu_pr[2]",  # beta
+  "mu_pr[3]",  # lambda
+  "mu_pr[4]",  # theta
+  "mu_pr[5]",  # psi
+  "mu_pr[6]",  # delta
+  "mu_pr[7]"   # kappa
+)
+
+# =====================================================================
+# 2. POSTERIOR DISTRIBUTIONS (Density / Areas Plot)
+# =====================================================================
+
+plot_posteriors <- mcmc_areas(
+  posterior_draws,
+  pars = target_mu_params,
+  prob = 0.95,
+  prob_outer = 0.99,
+  point_est = "median"
+) +
+  labs(
+    title = "Group-Level Posterior Distributions",
+    subtitle = "95% Credible Intervals and Medians",
+    x = "Parameter Value"
+  ) +
+  theme_minimal()
+
+print(plot_posteriors)
+
+# =====================================================================
+# 3. PARAMETER CORRELATIONS (Pairs Plot)
+# =====================================================================
+
+plot_correlations <- mcmc_pairs(
+  posterior_draws,
+  pars = target_mu_params,
+  off_diag_args = list(size = 0.5, alpha = 0.2),
+  diag_fun = "hist"
+)
+
+print(plot_correlations)
+
+# =====================================================================
+# 4. NUMERICAL SUMMARY & CORRELATION MATRIX
+# =====================================================================
+
+# Group-level numerical summary
+stats_summary <- fit$summary(variables = target_mu_params)
+print(stats_summary)
+
+# Correlation matrix from posterior draws
+draws_df <- as_draws_df(posterior_draws) %>%
+  select(all_of(target_mu_params))
+
+cor_matrix <- cor(draws_df)
+
+cat("\n--- POSTERIOR CORRELATION MATRIX (mu_pr) ---\n")
+print(round(cor_matrix, 3))
+
+
+
+
+
+library(tidyverse)
+library(posterior)
+library(bayesplot)
+library(ggplot2)
+
+# -------------------------------------------------------------------
+# 1. LOAD FIT
+# -------------------------------------------------------------------
+load("/Users/bty615/Documents/GitHub/reliable_info_bias/results/fits/Exp12/fit_trunc_simplified_boost_learning_aware_exp11.rdata")
+
+# -------------------------------------------------------------------
+# 2. EXTRACT & RENAME GROUP-LEVEL PARAMETERS
+# -------------------------------------------------------------------
+extract_mu <- function(fit, label) {
+  
+  d <- as_draws_df(fit$draws())
+  
+  # Stan index -> readable name
+  mu_map <- c(
+    "mu_pr[1]" = "mu_alpha",
+    "mu_pr[2]" = "mu_beta",
+    "mu_pr[3]" = "mu_lambda",
+    "mu_pr[4]" = "mu_theta",
+    "mu_pr[5]" = "mu_psi",
+    "mu_pr[6]" = "mu_delta",
+    "mu_pr[7]" = "mu_kappa"
+  )
+  
+  mu_df <- d %>%
+    select(all_of(names(mu_map))) %>%
+    rename(!!!setNames(names(mu_map), mu_map)) %>%
+    mutate(group = label) %>%
+    pivot_longer(
+      cols = all_of(unname(mu_map)),
+      names_to = "param",
+      values_to = "value"
+    )
+  
+  mu_df
+}
+
+df_plot <- extract_mu(fit, "Boost Learning Model")
+
+# -------------------------------------------------------------------
+# 3. PARAMETER LABELS (PARSED, PUBLICATION-READY)
+# -------------------------------------------------------------------
+param_labels <- c(
+  "mu_alpha"  = expression(paste(mu[alpha], " (Evidence Sensitivity)")),
+  "mu_beta"   = expression(paste(mu[beta], " (Bias / Intercept)")),
+  "mu_lambda" = expression(paste(mu[lambda], " (Sequential Decay)")),
+  "mu_psi"    = expression(paste(mu[psi], " (Distortion Scaling)")),
+  "mu_theta"  = expression(paste(mu[theta], " (Response Noise)")),
+  "mu_delta"  = expression(paste(mu[delta], " (Belief Persistence)")),
+  "mu_kappa"  = expression(paste(mu[kappa], " (Confirmation Boost)"))
+)
+
+model_color <- "#1B5E20"  # dark green
+
+# -------------------------------------------------------------------
+# 4. POSTERIOR DISTRIBUTIONS (HISTOGRAM FACETS)
+# -------------------------------------------------------------------
+p_post <- ggplot(df_plot, aes(x = value)) +
+  geom_histogram(
+    fill = model_color,
+    bins = 80,
+    alpha = 0.7,
+    color = "black",
+    linewidth = 0.1
+  ) +
+  facet_wrap(
+    ~ param,
+    scales = "free",
+    ncol = 3,
+    labeller = as_labeller(param_labels, default = label_parsed)
+  ) +
+  theme_bw(base_size = 16) +
+  theme(
+    panel.background = element_rect(fill = "white", color = NA),
+    plot.background  = element_rect(fill = "white", color = NA),
+    strip.background = element_rect(fill = "gray90", color = "gray50"),
+    strip.text       = element_text(face = "bold", size = 11),
+    legend.position  = "none"
+  ) +
+  labs(
+    title = "Posterior Distributions",
+    subtitle = "Group-level parameters",
+    x = "Posterior Sample Value",
+    y = "Frequency"
+  )
+
+print(p_post)
+
+# -------------------------------------------------------------------
+# 5. CORRELATION PAIRS PLOT
+# -------------------------------------------------------------------
+draws_wide <- as_draws_df(fit$draws()) %>%
+  select(
+    `mu_pr[1]`, `mu_pr[2]`, `mu_pr[3]`,
+    `mu_pr[4]`, `mu_pr[5]`, `mu_pr[6]`, `mu_pr[7]`
+  ) %>%
+  rename(
+    mu_alpha  = `mu_pr[1]`,
+    mu_beta   = `mu_pr[2]`,
+    mu_lambda = `mu_pr[3]`,
+    mu_theta  = `mu_pr[4]`,
+    mu_psi    = `mu_pr[5]`,
+    mu_delta  = `mu_pr[6]`,
+    mu_kappa  = `mu_pr[7]`
+  )
+
+color_scheme_set("green")
+
+p_corr <- mcmc_pairs(
+  draws_wide,
+  pars = colnames(draws_wide),
+  off_diag_args = list(size = 0.5, alpha = 0.25),
+  diag_fun = "hist"
+)
+
+print(p_corr)
+
+# -------------------------------------------------------------------
+# 6. NUMERIC CORRELATION MATRIX (OPTIONAL)
+# -------------------------------------------------------------------
+cor_matrix <- cor(draws_wide)
+
+cat("\n--- POSTERIOR CORRELATION MATRIX (mu parameters) ---\n")
+print(round(cor_matrix, 3))
+
+
+
+
+
+
+
+
+
+
+library(tidyverse)
+library(posterior)
+library(ggplot2)
+library(ggridges)
+
+# -------------------------------------------------------------------
+# 1. LOAD FIT
+# -------------------------------------------------------------------
+load("/Users/bty615/Documents/GitHub/reliable_info_bias/results/fits/Exp12/fit_trunc_simplified_boost_learning_aware_exp11.rdata")
+
+draws <- as_draws_df(fit$draws())
+
+# -------------------------------------------------------------------
+# 2. PARAMETER MAP (INDEX → NAME)
+# -------------------------------------------------------------------
+param_map <- tibble(
+  idx = 1:7,
+  name = c("alpha", "beta", "lambda", "theta", "psi", "delta", "kappa")
+)
+
+# -------------------------------------------------------------------
+# 3. GROUP-LEVEL PARAMETERS (TRANSFORMED)
+# -------------------------------------------------------------------
+group_params <- draws %>%
+  transmute(
+    alpha  = pnorm(`mu_pr[1]`),
+    beta   = `mu_pr[2]`,
+    lambda = exp(`mu_pr[3]`),
+    theta  = 5 * pnorm(`mu_pr[4]`),
+    psi    = 5 * pnorm(`mu_pr[5]`),
+    delta  = pnorm(`mu_pr[6]`),
+    kappa  = 1 + 2 * pnorm(`mu_pr[7]`)
+  ) %>%
+  pivot_longer(
+    everything(),
+    names_to = "parameter",
+    values_to = "value"
+  )
+
+# -------------------------------------------------------------------
+# 4. INDIVIDUAL-LEVEL PARAMETERS (TRANSFORMED)
+# -------------------------------------------------------------------
+# param_raw[n, p] → subject n, parameter p
+
+individual_params <- draws %>%
+  select(starts_with("param_raw[")) %>%
+  pivot_longer(
+    everything(),
+    names_to = "param",
+    values_to = "z"
+  ) %>%
+  extract(
+    param,
+    into = c("subject", "idx"),
+    regex = "param_raw\\[(\\d+),(\\d+)\\]",
+    convert = TRUE
+  ) %>%
+  left_join(param_map, by = "idx") %>%
+  mutate(
+    value = case_when(
+      name == "alpha"  ~ pnorm(z),
+      name == "beta"   ~ z,
+      name == "lambda" ~ exp(z),
+      name == "theta"  ~ 5 * pnorm(z),
+      name == "psi"    ~ 5 * pnorm(z),
+      name == "delta"  ~ pnorm(z),
+      name == "kappa"  ~ 1 + 2 * pnorm(z)
+    )
+  )
+
+# -------------------------------------------------------------------
+# 5. PLOT 1: GROUP-LEVEL POSTERIORS (INTERPRETABLE SCALE)
+# -------------------------------------------------------------------
+p_group <- ggplot(group_params, aes(x = value)) +
+  geom_histogram(
+    bins = 60,
+    fill = "#1B5E20",
+    color = "black",
+    alpha = 0.75
+  ) +
+  facet_wrap(~parameter, scales = "free", ncol = 3) +
+  theme_bw(base_size = 15) +
+  labs(
+    title = "Group-level Posterior Distributions",
+    subtitle = "Interpretable parameter scale",
+    x = "Parameter value",
+    y = "Frequency"
+  )
+
+print(p_group)
+
+# -------------------------------------------------------------------
+# 6. PLOT 2: INDIVIDUAL DIFFERENCES (RIDGE PLOTS)
+# -------------------------------------------------------------------
+p_indiv <- individual_params %>%
+  filter(parameter %in% c("delta", "kappa", "alpha")) %>%
+  ggplot(aes(x = value, y = factor(subject))) +
+  geom_density_ridges(
+    scale = 2,
+    rel_min_height = 0.01,
+    fill = "#1B5E20",
+    alpha = 0.6
+  ) +
+  facet_wrap(~parameter, scales = "free_x") +
+  theme_ridges(base_size = 14) +
+  labs(
+    title = "Individual-level Parameter Distributions",
+    x = "Parameter value",
+    y = "Participant"
+  )
+
+print(p_indiv)
+
+# -------------------------------------------------------------------
+# 7. OPTIONAL: GROUP vs INDIVIDUAL OVERLAY (DELTA & KAPPA)
+# -------------------------------------------------------------------
+p_overlay <- individual_params %>%
+  filter(parameter %in% c("delta", "kappa")) %>%
+  ggplot(aes(x = value)) +
+  geom_density(
+    data = group_params %>% filter(parameter %in% c("delta", "kappa")),
+    aes(x = value),
+    color = "black",
+    linewidth = 1.2
+  ) +
+  geom_density(
+    aes(group = subject),
+    alpha = 0.15,
+    fill = "#1B5E20"
+  ) +
+  facet_wrap(~parameter, scales = "free") +
+  theme_bw(base_size = 14) +
+  labs(
+    title = "Group vs Individual Parameter Distributions",
+    x = "Parameter value",
+    y = "Density"
+  )
+
+print(p_overlay)
