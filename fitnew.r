@@ -1,13 +1,4 @@
 
-
-
-
-
-
-
-
-
-
 #rm(list=ls(all=TRUE))  ## efface les données
 #source('~/thib/projects/tools/R_lib.r')
 #setwd('~/thib/projects/reliable_info')
@@ -23,7 +14,7 @@ library(cmdstanr)
 ##################################################
 
 #
-load("/Users/bty615/Documents/GitHub/reliable_info_bias/data/data_priorbelief_aware_red_exp12.rdata")
+load("/Users/bty615/Documents/GitHub/reliable_info_bias/data/data_priorbelief_aware_exp11.rdata")
 
 
 ## if Response ResponseButtonOrder= 1: blue->1, red->0
@@ -31,10 +22,10 @@ load("/Users/bty615/Documents/GitHub/reliable_info_bias/data/data_priorbelief_aw
 ## we recode: blue ->1, red ->2
 data <- data %>%
   mutate(choice = case_when(
-    (Manipulation_ResponseButtonOrder == 1 & Response == 0) ~ 2,
-    (Manipulation_ResponseButtonOrder == 1 & Response == 1) ~ 1,
-    (Manipulation_ResponseButtonOrder == 0 & Response == 0) ~ 1,
-    (Manipulation_ResponseButtonOrder == 0 & Response == 1) ~ 2
+    (ResponseButtonOrder == 1 & Response == 0) ~ 2,
+    (ResponseButtonOrder == 1 & Response == 1) ~ 1,
+    (ResponseButtonOrder == 0 & Response == 0) ~ 1,
+    (ResponseButtonOrder == 0 & Response == 1) ~ 2
   )) %>%
   mutate_at(vars(starts_with("color")), ~ ifelse(. == "blue", 1, 2)) %>%
   rowwise() %>%
@@ -107,7 +98,7 @@ data_list$grainsize = 5 ## specify grainsize for within chain parallelization
 
 ## Compile the model
 model <- cmdstan_model(
-  stan_file = './stan/log_trunc_simplified_learning_2.stan', 
+  stan_file = './log_trunc_simplified_boost_learning.stan', 
     force_recompile = TRUE, ## necessary if you change the mode
     cpp_options = list(stan_opencl = FALSE, stan_threads = TRUE), ## within chain parallel
     stanc_options = list("O1"), ## fastest sampling
@@ -137,8 +128,9 @@ loo <- fit$loo(cores = 10, moment_match = TRUE)
 
 # Save results
 dir.create('./results/fits/exp12/', recursive = TRUE, showWarnings = FALSE)
-save(fit, file = './results/fits/exp12/fit_trunc_simplified_learning2_aware_red_exp12.rdata')
-save(loo, file = './results/loo/loo_trunc_simplified_learning2_aware_red_exp12.rdata')
+save(fit, file = './results/fits/exp12/fit_trunc_simplified_boost_learning_aware_exp11.rdata')
+
+save(loo, file = './results/loo/loo_trunc_simplified_boost_learning_aware.rdata')
 
 
 
@@ -862,7 +854,7 @@ library(ggplot2)
 # -------------------------------------------------------------------
 # Load fits 
 # -------------------------------------------------------------------
-load("/Users/imogen/Documents/GitHub/reliable_info/results/fits/Exp12/fit_trunc_simplified_learning_unaware_exp11.rdata")
+load("/Users/imogen/Documents/GitHub/reliable_info/results/fits/Exp12/fit_trunc_simplified_learning2_aware_red_exp12.rdata")
 fit_unaware <- fit
 
 load("/Users/imogen/Documents/GitHub/reliable_info/results/fits/Exp12/fit_trunc_simplified_learning_aware_exp11.rdata")
@@ -1114,3 +1106,113 @@ cat("BAYESIAN EXCEEDANCE PROBABILITY TEST RESULTS\n")
 cat("Ordering: Explicit Aware > Implicit Aware > Implicit Unaware\n")
 cat("==============================================================\n")
 print(results_df, n = Inf)
+
+
+
+
+
+
+
+
+
+
+
+
+library(tidyverse)
+library(posterior)
+library(ggplot2)
+
+# -------------------------------------------------------------------
+# Load Fit (Asymmetric Model)
+# -------------------------------------------------------------------
+# FIXED: Changed the closing single quote to a double quote to match the opening
+load("/Users/bty615/Documents/GitHub/reliable_info_bias/results/fits/exp12/fit_trunc_simplified_learning2_unaware_blue_exp11.rdata")
+
+# -------------------------------------------------------------------
+# Function: extract the transformed mu_ parameters
+# -------------------------------------------------------------------
+extract_mu <- function(fit, label) {
+  
+  d <- as_draws_df(fit$draws())
+  
+  # UPDATED: List now includes mu_deltaB and mu_deltaR
+  keep_params <- c(
+    "mu_alpha",
+    "mu_beta",
+    "mu_lambda",
+    "mu_theta",
+    "mu_psi",
+    "mu_deltaB",
+    "mu_deltaR"
+  )
+  
+  # Ensure only parameters present in the fit are selected
+  keep_params <- keep_params[keep_params %in% colnames(d)]
+  
+  mu_df <- d %>%
+    select(all_of(keep_params)) %>%
+    mutate(group = label) %>%
+    pivot_longer(
+      cols = all_of(keep_params),
+      names_to = "param",
+      values_to = "value"
+    )
+  
+  return(mu_df)
+}
+
+# -------------------------------------------------------------------
+# Extract Data
+# -------------------------------------------------------------------
+# Ensure 'fit' matches the object name inside your .rdata file
+df_plot <- extract_mu(fit, "Asymmetric Model")
+
+# -------------------------------------------------------------------
+# Define Custom Labels and Colors
+# -------------------------------------------------------------------
+param_labels <- c(
+  "mu_alpha"  = expression(paste(mu[alpha])),
+  "mu_beta"   = expression(paste(mu[beta])),
+  "mu_lambda" = expression(paste(mu[lambda], " (Sequential Decay)")),
+  "mu_psi"    = expression(paste(mu[psi], " (Distortion Scaling)")),
+  "mu_theta"  = expression(paste(mu[theta], " (Response Noise)")),
+  "mu_deltaB" = expression(paste(mu[delta[B]], " (Persistence Blue)")),
+  "mu_deltaR" = expression(paste(mu[delta[R]], " (Persistence Red)"))
+)
+
+# Using a single color since there is only one group
+model_color <- "#1B5E20" # Dark Green
+
+# -------------------------------------------------------------------
+# Plot
+# -------------------------------------------------------------------
+p <- ggplot(df_plot, aes(x = value)) +
+  geom_histogram(
+    fill = model_color,
+    position = "identity",
+    bins = 80,
+    alpha = 0.7,
+    color = "black", 
+    linewidth = 0.1
+  ) +
+  facet_wrap(~param, scales = "free", ncol = 3, 
+             labeller = as_labeller(param_labels, default = label_parsed)) +
+  
+  theme_bw(base_size = 16) +
+  theme(
+    panel.background = element_rect(fill = "white", color = NA),
+    plot.background = element_rect(fill = "white", color = NA),
+    
+    strip.background = element_rect(fill = "gray90", color = "gray50"),
+    strip.text = element_text(face = "bold", size = 10),
+    
+    legend.position = "none" 
+  ) +
+  labs(
+    title = "Posterior Distributions",
+
+    x = "Posterior Sample Value",
+    y = "Frequency"
+  )
+
+print(p)

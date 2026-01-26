@@ -1,23 +1,6 @@
 //==============================================================================
-// Model Overview: Advanced Learning with Asymmetric Persistence & Confirmation Bias
-
-//updates the sequential Bayesian model with two major changes:
-//
-// 1. Two Deltas (Asymmetric Learning Persistence):
-//    Instead of a single δ, we now use delta_B (params[6]) and delta_R (params[7]).
-//    These parameters independently control how much "weight" past Blue vs. Red 
-//    feedback carries into future trials. This allows the model to capture 
-//    subjects who might be more "stubborn" or have better memory for feedback 
-//    of one specific color.
-//
-// 2. Kappa Boost (Confirmation Bias):
-//    We introduce κ (params[8]). This parameter scales the sensory log-odds of a 
-//    cue ONLY when that cue confirms the subject's current leaning (the prior V_b).
-//    If V_b > 0.5 and the cue is Blue, the evidence is multiplied by κ. 
-//    This captures the "Advanced Learning" dynamic where agents over-weight 
-//    information that aligns with their existing beliefs.
-//================================================================
-
+// Model Overview: Advanced Learning with Confirmation Bias (Single Delta)
+//==============================================================================
 
 functions {
   vector clamp_vector(vector x, real lo, real hi) {
@@ -46,27 +29,15 @@ functions {
     for (i in 1:size(slice_indices)) {
       int n = slice_indices[i];
     
-      // Parameter space is 8: alpha, beta, lambda, theta, psi, delta_B, delta_R, kappa
-      vector[8] params;
+      // Parameter space: alpha, beta, lambda, theta, psi, delta, kappa
+      vector[7] params;
       params[1] = Phi_approx(mu_pr[1] + sigma_pr[1] * param_raw[n, 1]); // alpha
       params[2] = mu_pr[2] + sigma_pr[2] * param_raw[n, 2];             // beta
       params[3] = Phi_approx(mu_pr[3] + sigma_pr[3] * param_raw[n, 3]); // lambda
       params[4] = Phi_approx(mu_pr[4] + sigma_pr[4] * param_raw[n, 4]) * 5; // theta
       params[5] = Phi_approx(mu_pr[5] + sigma_pr[5] * param_raw[n, 5]) * 10; // psi
-      
-      // THE TWO DELTAS (Asymmetric Learning Persistence)
-      // params[6] (delta_B) tracks how past Blue feedback persists in memory.
-      // params[7] (delta_R) tracks how past Red feedback persists in memory.
-      // This allows the model to capture color-specific learning rates.
-      params[6] = Phi_approx(mu_pr[6] + sigma_pr[6] * param_raw[n, 6]); 
-      params[7] = Phi_approx(mu_pr[7] + sigma_pr[7] * param_raw[n, 7]); 
-      
-      // THE KAPPA BOOST
-      // params[8] is the confirmation boost. It scales evidence that matches the prior.
-// - Enforces kappa >= 1.0 because exp() is always positive.
-// - Ensures boost logic: evidence is amplified, never discounted.
-// - Prevents anti-confirmation bias during estimation.
-      params[8] = Phi_approx(mu_pr[8] + sigma_pr[8] * param_raw[n, 8]); 
+      params[6] = Phi_approx(mu_pr[6] + sigma_pr[6] * param_raw[n, 6]); // Delta
+      params[7] = 1.0 + exp(mu_pr[7] + sigma_pr[7] * param_raw[n, 7]);  // Kappa
 
       real beliefcount_blue = 1.0; 
       real beliefcount_red = 1.0;
@@ -85,12 +56,10 @@ functions {
           int color_val = color[n, t, s];
           real log_odds = params[1] * l * params[5] + (1-params[1])* params[2]; 
           
-          // COMMENT: THE KAPPA BOOST LOGIC
-          // Sensory evidence (log_odds) is multiplied by kappa only if the cue 
-          // matches the current leaning of the prior V_b.
+          // KAPPA BOOST LOGIC
           real k_boost = 1.0;
           if ((color_val == 1 && V_b > 0.5) || (color_val == 2 && V_b < 0.5)) {
-            k_boost = params[8];
+            k_boost = params[7];
           }
           
           evidence[color_val] += exp(params[3] * (s - sample_size)) * k_boost * log_odds;
@@ -99,12 +68,10 @@ functions {
         vector[2] evidence_safe = clamp_vector(evidence, -100, 100);
         lp += categorical_lpmf(choice[n, t] | softmax(params[4]*evidence_safe));
         
-        // COMMENT: DUAL DELTA UPDATING
-        // feedback x=1 increases Blue count; x=0 increases Red count.
-        // delta_B and delta_R control the decay of the respective history.
+        // SINGLE DELTA UPDATING
         int x = feedback[n, t];
         beliefcount_blue = params[6] * (beliefcount_blue - 1) + x + 1;
-        beliefcount_red = params[7] * (beliefcount_red - 1) + (1 - x) + 1;
+        beliefcount_red = params[6] * (beliefcount_red - 1) + (1 - x) + 1;
         
         V_b = beliefcount_blue / (beliefcount_blue + beliefcount_red);
       }
@@ -112,7 +79,6 @@ functions {
     return lp;
   }
   
-  // Helpers 
   vector compute_evidence(int sample_size, array[] int color_data, array[] real proba_data, 
                           real alpha, real beta, real lambda, real theta, real psi, 
                           real V_b, real kappa) { 
@@ -139,7 +105,7 @@ functions {
                        int choice, real alpha, real beta, real lambda, real theta, real psi, 
                        real V_b, real kappa) { 
     vector[2] evidence = compute_evidence(sample_size, color_data, proba_data, 
-                                         alpha, beta, lambda, theta, psi, V_b, kappa); 
+                                          alpha, beta, lambda, theta, psi, V_b, kappa); 
     vector[2] evidence_safe = clamp_vector(evidence, -100, 100);
     return categorical_lpmf(choice | softmax(theta * evidence_safe));
   }
@@ -159,9 +125,9 @@ data {
 }
 
 parameters {
-  vector[8] mu_pr;
-  vector<lower=0>[8] sigma_pr;
-  matrix[N, 8] param_raw;
+  vector[7] mu_pr;
+  vector<lower=0>[7] sigma_pr;
+  matrix[N, 7] param_raw;
 }
 
 model {
@@ -177,74 +143,50 @@ model {
 }
 
 generated quantities {
-    matrix[N, 8] params;
-    array[N, T_max] real y_pred = rep_array(-1.0, N, T_max);
-    vector[sum(Tsubj)] log_lik;
+  matrix[N, 7] params;
+  array[N, T_max] real y_pred = rep_array(-1.0, N, T_max);
+  vector[sum(Tsubj)] log_lik;
 
-    int k = 0;
-    for (n in 1:N) {
-        params[n, 1] = Phi_approx(mu_pr[1] + sigma_pr[1] * param_raw[n, 1]);
-        params[n, 2] = mu_pr[2] + sigma_pr[2] * param_raw[n, 2];
-        params[n, 3] = Phi_approx(mu_pr[3] + sigma_pr[3] * param_raw[n, 3]);
-        params[n, 4] = Phi_approx(mu_pr[4] + sigma_pr[4] * param_raw[n, 4]) * 5;
-        params[n, 5] = Phi_approx(mu_pr[5] + sigma_pr[5] * param_raw[n, 5]) * 10;
-        params[n, 6] = Phi_approx(mu_pr[6] + sigma_pr[6] * param_raw[n, 6]);
-        params[n, 7] = Phi_approx(mu_pr[7] + sigma_pr[7] * param_raw[n, 7]);
-        params[n, 8] = 1.0 + exp(mu_pr[8] + sigma_pr[8] * param_raw[n, 8]);
+  int k = 0;
+  for (n in 1:N) {
+    params[n, 1] = Phi_approx(mu_pr[1] + sigma_pr[1] * param_raw[n, 1]);
+    params[n, 2] = mu_pr[2] + sigma_pr[2] * param_raw[n, 2];
+    params[n, 3] = Phi_approx(mu_pr[3] + sigma_pr[3] * param_raw[n, 3]);
+    params[n, 4] = Phi_approx(mu_pr[4] + sigma_pr[4] * param_raw[n, 4]) * 5;
+    params[n, 5] = Phi_approx(mu_pr[5] + sigma_pr[5] * param_raw[n, 5]) * 10;
+    params[n, 6] = Phi_approx(mu_pr[6] + sigma_pr[6] * param_raw[n, 6]);
+    params[n, 7] = 1.0 + exp(mu_pr[7] + sigma_pr[7] * param_raw[n, 7]);
 
-        real beliefcount_blue = 1.0;
-        real beliefcount_red = 1.0;
-        real V_b = 0.5;
+    real beliefcount_blue = 1.0;
+    real beliefcount_red = 1.0;
+    real V_b = 0.5;
 
-        for (t in 1:Tsubj[n]) {
-            k += 1;
-            array[I_max] int color_trial;
-            array[I_max] real proba_trial;
-            for (i in 1:I_max) {
-                color_trial[i] = color[n, t, i];
-                proba_trial[i] = proba[n, t, i];
-            }
+    for (t in 1:Tsubj[n]) {
+      k += 1;
+      array[I_max] int color_trial;
+      array[I_max] real proba_trial;
+      for (i in 1:I_max) {
+        color_trial[i] = color[n, t, i];
+        proba_trial[i] = proba[n, t, i];
+      }
 
-            // log_lik calculation
-            log_lik[k] = compute_log_lik(sample[n, t], color_trial, proba_trial,
-                                         choice[n, t],
-                                         params[n, 1], params[n, 2], params[n, 3],
-                                         params[n, 4], params[n, 5], V_b, params[n, 8]);
+      log_lik[k] = compute_log_lik(sample[n, t], color_trial, proba_trial,
+                                   choice[n, t],
+                                   params[n, 1], params[n, 2], params[n, 3],
+                                   params[n, 4], params[n, 5], V_b, params[n, 7]);
 
-            vector[2] evidence = compute_evidence(sample[n, t], color_trial, proba_trial,
-                                                  params[n, 1], params[n, 2], params[n, 3],
-                                                  params[n, 4], params[n, 5], V_b, params[n, 8]);
+      vector[2] evidence = compute_evidence(sample[n, t], color_trial, proba_trial,
+                                            params[n, 1], params[n, 2], params[n, 3],
+                                            params[n, 4], params[n, 5], V_b, params[n, 7]);
 
-            y_pred[n, t] = categorical_rng(softmax(params[n, 4] * clamp_vector(evidence, -100, 100)));
+      y_pred[n, t] = categorical_rng(softmax(params[n, 4] * clamp_vector(evidence, -100, 100)));
 
-            int x = feedback[n, t];
-            beliefcount_blue = params[n, 6] * (beliefcount_blue - 1) + x + 1;
-            beliefcount_red = params[n, 7] * (beliefcount_red - 1) + (1 - x) + 1;
-            V_b = beliefcount_blue / (beliefcount_blue + beliefcount_red);
-        }
+      int x = feedback[n, t];
+      beliefcount_blue = params[n, 6] * (beliefcount_blue - 1) + x + 1;
+      beliefcount_red = params[n, 6] * (beliefcount_red - 1) + (1 - x) + 1;
+      V_b = beliefcount_blue / (beliefcount_blue + beliefcount_red);
     }
+  }
 }
-    
-    
-    # The warnings (100% max_treedepth and low E-BFMI) indicate that the HMC 
-# integrator is struggling with a difficult posterior geometry. 
-#  Betancourt (2018)- HIGH CURVATURE ( Max Treedepth):
-#    The hierarchical structure with 8 subject-level parameters creates a 
-#    complex typical set. Specifically, the  scaling of evidence 
-#    combined with large multipliers (kappa) produces regions of 
-#    extreme curvature—narrow, steep "canyons" in the log-posterior. 
-#    To maintain stability and avoid divergences in these areas, HMC must 
-#    take very small step sizes. Consequently, the trajectories hit the 
-#    maximum treedepth limit before they can fully traverse the typical set, 
-#    leading to poor exploration and low effective sample sizes.
-#COLLINEARITY (Low E-BFMI):
-#    The use of separate parameters for delta_B, delta_R, and kappa makes 
-#    distinct cognitive mechanisms partially interchangeable (e.g., persistent 
-#    memory vs. confirmation bias - multiple mechanisms that are trying to explain 
-#the same behavioral data. ). This creates long, "flat" valleys in 
-#    parameter space where the model cannot uniquely identify the cause of 
-#    behavior. In these regions, the kinetic energy
-#    cannot be efficiently redistributed to explore the target prob distribution, 
-#    resulting in the observed low E-BFMI (Energy-Bayesian Fraction of 
-#    Missing Information).
-#
+
+
