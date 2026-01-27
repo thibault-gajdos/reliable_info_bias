@@ -80,7 +80,7 @@ functions {
           softmax(params[4] * clamp_vector(evidence, -100, 100))
         );
 
-        // CHANGE 8: Symmetric delta update (IDENTICAL to old model)
+        // CHANGE 8: Symmetric delta update 
         int x = feedback[n,t];
         beliefcount_blue = params[6] * (beliefcount_blue - 1) + x + 1;
         beliefcount_red  = params[6] * (beliefcount_red  - 1) + (1 - x) + 1;
