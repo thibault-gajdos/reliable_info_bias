@@ -128,9 +128,9 @@ loo <- fit$loo(cores = 10, moment_match = TRUE)
 
 # Save results
 dir.create('./results/fits/exp12/', recursive = TRUE, showWarnings = FALSE)
-save(fit, file = './results/fits/exp12/fit_trunc_simplified_boost_learning_aware_exp11.rdata')
+save(fit, file = './results/fits/exp12/fit_trunc_simplified_learning_eta_aware_exp11.rdata')
 
-save(loo, file = './results/loo/loo_trunc_simplified_boost_learning_aware.rdata')
+save(loo, file = './results/loo/loo_trunc_simplified_learning_eta_aware.rdata')
 
 
 
@@ -1589,3 +1589,147 @@ p_overlay <- individual_params %>%
   )
 
 print(p_overlay)
+
+
+
+
+
+
+
+
+
+
+
+library(tidyverse)
+library(posterior)
+library(ggplot2)
+library(ggridges)
+
+# -------------------------------------------------------------------
+# 1. LOAD FIT
+# -------------------------------------------------------------------
+# Ensure this matches your latest file name
+load("/Users/bty615/Documents/GitHub/reliable_info_bias/results/fits/Exp12/fit_trunc_simplified_learning_eta_aware_exp11.rdata")
+
+draws <- as_draws_df(fit$draws())
+
+# -------------------------------------------------------------------
+# 2. PARAMETER MAP (INDEX → NAME)
+# -------------------------------------------------------------------
+param_map <- tibble(
+  idx = 1:7,
+  name = c("alpha", "beta", "lambda", "theta", "psi", "delta", "eta")
+)
+
+# -------------------------------------------------------------------
+# 3. GROUP-LEVEL PARAMETERS (TRANSFORMED)
+# -------------------------------------------------------------------
+group_params <- draws %>%
+  transmute(
+    alpha  = pnorm(`mu_pr[1]`),
+    beta   = `mu_pr[2]`,
+    lambda = pnorm(`mu_pr[3]`),
+    theta  = 1.0, # FIXED
+    psi    = 1.0, # FIXED
+    delta  = pnorm(`mu_pr[6]`),
+    eta    = pnorm(`mu_pr[7]`)
+  ) %>%
+  pivot_longer(
+    everything(),
+    names_to = "parameter",
+    values_to = "value"
+  )
+
+# -------------------------------------------------------------------
+# 4. INDIVIDUAL-LEVEL PARAMETERS (TRANSFORMED)
+# -------------------------------------------------------------------
+individual_params <- draws %>%
+  select(starts_with("param_raw[")) %>%
+  pivot_longer(
+    everything(),
+    names_to = "param_string",
+    values_to = "z"
+  ) %>%
+  extract(
+    param_string,
+    into = c("subject", "idx"),
+    regex = "param_raw\\[(\\d+),(\\d+)\\]",
+    convert = TRUE
+  ) %>%
+  left_join(param_map, by = "idx") %>%
+  # We use the mu_pr and sigma_pr columns from 'draws' for each sample
+  mutate(
+    mu = case_when(
+      idx == 1 ~ draws[[paste0("mu_pr[1]")]][1:n()],
+      idx == 2 ~ draws[[paste0("mu_pr[2]")]][1:n()],
+      idx == 3 ~ draws[[paste0("mu_pr[3]")]][1:n()],
+      idx == 6 ~ draws[[paste0("mu_pr[6]")]][1:n()],
+      idx == 7 ~ draws[[paste0("mu_pr[7]")]][1:n()],
+      TRUE     ~ 0
+    ),
+    sigma = case_when(
+      idx == 1 ~ draws[[paste0("sigma_pr[1]")]][1:n()],
+      idx == 2 ~ draws[[paste0("sigma_pr[2]")]][1:n()],
+      idx == 3 ~ draws[[paste0("sigma_pr[3]")]][1:n()],
+      idx == 6 ~ draws[[paste0("sigma_pr[6]")]][1:n()],
+      idx == 7 ~ draws[[paste0("sigma_pr[7]")]][1:n()],
+      TRUE     ~ 0
+    )
+  ) %>%
+  mutate(
+    value = case_when(
+      name == "alpha"  ~ pnorm(mu + sigma * z),
+      name == "beta"   ~ mu + sigma * z,
+      name == "lambda" ~ pnorm(mu + sigma * z),
+      name == "theta"  ~ 1.0,
+      name == "psi"    ~ 1.0,
+      name == "delta"  ~ pnorm(mu + sigma * z),
+      name == "eta"    ~ pnorm(mu + sigma * z)
+    )
+  )
+
+# -------------------------------------------------------------------
+# 5. PLOT 1: GROUP-LEVEL POSTERIORS
+# -------------------------------------------------------------------
+# We filter out theta and psi because they are constants (value = 1.0)
+p_group <- group_params %>% 
+  filter(!parameter %in% c("theta", "psi")) %>%
+  ggplot(aes(x = value)) +
+  geom_histogram(bins = 50, fill = "#2E7D32", color = "white", alpha = 0.8) +
+  facet_wrap(~parameter, scales = "free", ncol = 3) +
+  theme_minimal(base_size = 14) +
+  labs(
+    title = "Group-level Posterior Distributions",
+    subtitle = "Continuous Eta Model (Anchored theta/psi = 1.0)",
+    x = "Parameter Value",
+    y = "Frequency"
+  )
+
+print(p_group)
+
+# -------------------------------------------------------------------
+# 6. PLOT 2: INDIVIDUAL DIFFERENCES (RIDGE PLOTS)
+# -------------------------------------------------------------------
+# IMPORTANT: We only plot parameters with variance (skip theta/psi)
+
+p_indiv <- individual_params %>%
+  filter(name %in% c("alpha", "delta", "eta")) %>%
+  ggplot(aes(x = value, y = factor(subject), fill = name)) +
+  geom_density_ridges(
+    scale = 1.5, 
+    rel_min_height = 0.01, 
+    alpha = 0.7, 
+    color = "white"
+  ) +
+  facet_wrap(~name, scales = "free_x") +
+  scale_fill_viridis_d(option = "mako", begin = 0.3, end = 0.7) +
+  theme_ridges(base_size = 12) +
+  theme(legend.position = "none") +
+  labs(
+    title = "Individual Subject Posteriors",
+    subtitle = "Key dynamic parameters: Alpha, Delta, and Eta",
+    x = "Parameter Value",
+    y = "Subject ID"
+  )
+
+print(p_indiv)
