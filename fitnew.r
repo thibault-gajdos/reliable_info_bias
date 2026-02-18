@@ -93,12 +93,12 @@ data_list <- list(
 ##  FIT THE MODEL
 ####################################################
 
-setwd("/Users/bty615/Documents/GitHub/reliable_info_bias")
+setwd("/Users/bty615/Documents/GitHub/reliable_info_bias/stan")
 data_list$grainsize = 5 ## specify grainsize for within chain parallelization
 
 ## Compile the model
 model <- cmdstan_model(
-  stan_file = './log_trunc_simplified_boost_learning.stan', 
+  stan_file = './log_trunc_simplified_model.stan', 
     force_recompile = TRUE, ## necessary if you change the mode
     cpp_options = list(stan_opencl = FALSE, stan_threads = TRUE), ## within chain parallel
     stanc_options = list("O1"), ## fastest sampling
@@ -128,9 +128,9 @@ loo <- fit$loo(cores = 10, moment_match = TRUE)
 
 # Save results
 dir.create('./results/fits/exp12/', recursive = TRUE, showWarnings = FALSE)
-save(fit, file = './results/fits/exp12/fit_trunc_simplified_learning_eta_aware_exp11.rdata')
+save(fit, file = './results/fits/exp12/fit_trunc_simplified_simple_aware_exp11.rdata')
 
-save(loo, file = './results/loo/loo_trunc_simplified_learning_eta_aware.rdata')
+save(loo, file = './results/loo/loo_trunc_simplified_simple_aware_exp11.rdata')
 
 
 
@@ -149,7 +149,7 @@ exp <- 'exp11'
 models <- c('basic','theta','trunc_simplified')
 models <- c('basic','theta','trunc','full')
 #load(paste0('./data/data_list_',exp,'.rdata'))
-load("/Users/imogen/Documents/GitHub/reliable_info/data/data_priorbelief_unaware_exp11.rdata")
+load("/Users/bty615/Documents/GitHub/reliable_info_bias/data/data_priorbelief_aware_exp11.rdata")
 N <- data_list$N
 
 # ---------------------------------------------------
@@ -163,7 +163,7 @@ for (i in 1:length(models)){
     fits[[i]] <- fit
 }
 
-load("/Users/imogen/Documents/GitHub/reliable_info/results/fits/Exp11/fit_trunc_simplified_aware_exp11.rdata")
+load("/Users/bty615/Documents/GitHub/reliable_info_bias/results/fits/Exp12/fit_trunc_simplified_learning_boost_aware_exp11.rdata")
 fit_trunc_simplified <- fit
 ## Pairs plots
 for (i in 1:length(models)) {
@@ -176,6 +176,11 @@ for (i in 1:length(models)) {
   plot_file <- paste0('./results/plots/',exp,'/pairs_plot_', models[i], "_", exp, ".pdf")
   ggsave(plot, file = plot_file)
 }
+
+
+
+
+
 
 
 library(posterior)
@@ -1116,112 +1121,6 @@ print(results_df, n = Inf)
 
 
 
-
-
-library(tidyverse)
-library(posterior)
-library(ggplot2)
-
-# -------------------------------------------------------------------
-# Load Fit (Asymmetric Model)
-# -------------------------------------------------------------------
-# FIXED: Changed the closing single quote to a double quote to match the opening
-load("/Users/bty615/Documents/GitHub/reliable_info_bias/results/fits/exp12/fit_trunc_simplified_learning2_unaware_blue_exp11.rdata")
-
-# -------------------------------------------------------------------
-# Function: extract the transformed mu_ parameters
-# -------------------------------------------------------------------
-extract_mu <- function(fit, label) {
-  
-  d <- as_draws_df(fit$draws())
-  
-  # UPDATED: List now includes mu_deltaB and mu_deltaR
-  keep_params <- c(
-    "mu_alpha",
-    "mu_beta",
-    "mu_lambda",
-    "mu_theta",
-    "mu_psi",
-    "mu_deltaB",
-    "mu_deltaR"
-  )
-  
-  # Ensure only parameters present in the fit are selected
-  keep_params <- keep_params[keep_params %in% colnames(d)]
-  
-  mu_df <- d %>%
-    select(all_of(keep_params)) %>%
-    mutate(group = label) %>%
-    pivot_longer(
-      cols = all_of(keep_params),
-      names_to = "param",
-      values_to = "value"
-    )
-  
-  return(mu_df)
-}
-
-# -------------------------------------------------------------------
-# Extract Data
-# -------------------------------------------------------------------
-# Ensure 'fit' matches the object name inside your .rdata file
-df_plot <- extract_mu(fit, "Asymmetric Model")
-
-# -------------------------------------------------------------------
-# Define Custom Labels and Colors
-# -------------------------------------------------------------------
-param_labels <- c(
-  "mu_alpha"  = expression(paste(mu[alpha])),
-  "mu_beta"   = expression(paste(mu[beta])),
-  "mu_lambda" = expression(paste(mu[lambda], " (Sequential Decay)")),
-  "mu_psi"    = expression(paste(mu[psi], " (Distortion Scaling)")),
-  "mu_theta"  = expression(paste(mu[theta], " (Response Noise)")),
-  "mu_deltaB" = expression(paste(mu[delta[B]], " (Persistence Blue)")),
-  "mu_deltaR" = expression(paste(mu[delta[R]], " (Persistence Red)"))
-)
-
-# Using a single color since there is only one group
-model_color <- "#1B5E20" # Dark Green
-
-# -------------------------------------------------------------------
-# Plot
-# -------------------------------------------------------------------
-p <- ggplot(df_plot, aes(x = value)) +
-  geom_histogram(
-    fill = model_color,
-    position = "identity",
-    bins = 80,
-    alpha = 0.7,
-    color = "black", 
-    linewidth = 0.1
-  ) +
-  facet_wrap(~param, scales = "free", ncol = 3, 
-             labeller = as_labeller(param_labels, default = label_parsed)) +
-  
-  theme_bw(base_size = 16) +
-  theme(
-    panel.background = element_rect(fill = "white", color = NA),
-    plot.background = element_rect(fill = "white", color = NA),
-    
-    strip.background = element_rect(fill = "gray90", color = "gray50"),
-    strip.text = element_text(face = "bold", size = 10),
-    
-    legend.position = "none" 
-  ) +
-  labs(
-    title = "Posterior Distributions",
-
-    x = "Posterior Sample Value",
-    y = "Frequency"
-  )
-
-print(p)
-
-
-
-
-
-
 library(tidyverse)
 library(posterior)
 library(bayesplot)
@@ -1310,8 +1209,6 @@ print(round(cor_matrix, 3))
 
 
 
-
-
 library(tidyverse)
 library(posterior)
 library(bayesplot)
@@ -1320,32 +1217,34 @@ library(ggplot2)
 # -------------------------------------------------------------------
 # 1. LOAD FIT
 # -------------------------------------------------------------------
-load("/Users/bty615/Documents/GitHub/reliable_info_bias/results/fits/Exp12/fit_trunc_simplified_boost_learning_aware_exp11.rdata")
+# Update this path to your new fit file
+load("/Users/bty615/Documents/GitHub/reliable_info_bias/results/fits/Exp12/fit_trunc_simplified_learning_boost_unaware_exp11.rdata")
 
 # -------------------------------------------------------------------
-# 2. EXTRACT & RENAME GROUP-LEVEL PARAMETERS
+# 2. EXTRACT GROUP-LEVEL PARAMETERS (TRANSFORMED)
 # -------------------------------------------------------------------
 extract_mu <- function(fit, label) {
   
   d <- as_draws_df(fit$draws())
   
-  # Stan index -> readable name
-  mu_map <- c(
-    "mu_pr[1]" = "mu_alpha",
-    "mu_pr[2]" = "mu_beta",
-    "mu_pr[3]" = "mu_lambda",
-    "mu_pr[4]" = "mu_theta",
-    "mu_pr[5]" = "mu_psi",
-    "mu_pr[6]" = "mu_delta",
-    "mu_pr[7]" = "mu_kappa"
+  # In the new model, we grab the explicitly named generated quantities.
+  # These are already on the 'Physical' scale (0-1, 0-2, etc.)
+  target_params <- c(
+    "mu_alpha", 
+    "mu_beta", 
+    "mu_lambda", 
+    "mu_delta", 
+    "mu_eta"
   )
   
+  # Ensure we only grab parameters that exist in the fit object
+  existing_params <- intersect(target_params, colnames(d))
+  
   mu_df <- d %>%
-    select(all_of(names(mu_map))) %>%
-    rename(!!!setNames(names(mu_map), mu_map)) %>%
+    select(all_of(existing_params)) %>%
     mutate(group = label) %>%
     pivot_longer(
-      cols = all_of(unname(mu_map)),
+      cols = -group,
       names_to = "param",
       values_to = "value"
     )
@@ -1353,32 +1252,30 @@ extract_mu <- function(fit, label) {
   mu_df
 }
 
-df_plot <- extract_mu(fit, "Boost Learning Model")
+df_plot <- extract_mu(fit, "Hierarchical Boost Model")
 
 # -------------------------------------------------------------------
-# 3. PARAMETER LABELS (PARSED, PUBLICATION-READY)
+# 3. PARAMETER LABELS (REFLECTING NEW ETA/DELTA LOGIC)
 # -------------------------------------------------------------------
 param_labels <- c(
-  "mu_alpha"  = expression(paste(mu[alpha], " (Evidence Sensitivity)")),
-  "mu_beta"   = expression(paste(mu[beta], " (Bias / Intercept)")),
-  "mu_lambda" = expression(paste(mu[lambda], " (Sequential Decay)")),
-  "mu_psi"    = expression(paste(mu[psi], " (Distortion Scaling)")),
-  "mu_theta"  = expression(paste(mu[theta], " (Response Noise)")),
-  "mu_delta"  = expression(paste(mu[delta], " (Belief Persistence)")),
-  "mu_kappa"  = expression(paste(mu[kappa], " (Confirmation Boost)"))
+  "mu_alpha"  = expression(paste(mu[alpha], " (alpha: 0-1)")),
+  "mu_beta"   = expression(paste(mu[beta], " (beta)")),
+  "mu_lambda" = expression(paste(mu[lambda], " (lambda: 0-1)")),
+  "mu_delta"  = expression(paste(mu[delta], " (delta: 0-2)")),
+  "mu_eta"    = expression(paste(mu[eta], " (eta)"))
 )
 
-model_color <- "#1B5E20"  # dark green
+model_color <- "#2E7D32"  # Forest green
 
 # -------------------------------------------------------------------
-# 4. POSTERIOR DISTRIBUTIONS (HISTOGRAM FACETS)
+# 4. POSTERIOR DISTRIBUTIONS
 # -------------------------------------------------------------------
 p_post <- ggplot(df_plot, aes(x = value)) +
   geom_histogram(
     fill = model_color,
-    bins = 80,
+    bins = 60,
     alpha = 0.7,
-    color = "black",
+    color = "white",
     linewidth = 0.1
   ) +
   facet_wrap(
@@ -1387,19 +1284,17 @@ p_post <- ggplot(df_plot, aes(x = value)) +
     ncol = 3,
     labeller = as_labeller(param_labels, default = label_parsed)
   ) +
-  theme_bw(base_size = 16) +
+  theme_bw(base_size = 14) +
   theme(
-    panel.background = element_rect(fill = "white", color = NA),
-    plot.background  = element_rect(fill = "white", color = NA),
-    strip.background = element_rect(fill = "gray90", color = "gray50"),
-    strip.text       = element_text(face = "bold", size = 11),
-    legend.position  = "none"
+    strip.background = element_rect(fill = "gray95"),
+    strip.text       = element_text(face = "bold"),
+    panel.grid.minor = element_blank()
   ) +
   labs(
-    title = "Posterior Distributions",
-    subtitle = "Group-level parameters",
-    x = "Posterior Sample Value",
-    y = "Frequency"
+    title = "Transformed Group-Level Posteriors",
+  
+    x = "Parameter Value",
+    y = "Density"
   )
 
 print(p_post)
@@ -1407,39 +1302,38 @@ print(p_post)
 # -------------------------------------------------------------------
 # 5. CORRELATION PAIRS PLOT
 # -------------------------------------------------------------------
+# Extract wide format for pairs plot
 draws_wide <- as_draws_df(fit$draws()) %>%
-  select(
-    `mu_pr[1]`, `mu_pr[2]`, `mu_pr[3]`,
-    `mu_pr[4]`, `mu_pr[5]`, `mu_pr[6]`, `mu_pr[7]`
-  ) %>%
-  rename(
-    mu_alpha  = `mu_pr[1]`,
-    mu_beta   = `mu_pr[2]`,
-    mu_lambda = `mu_pr[3]`,
-    mu_theta  = `mu_pr[4]`,
-    mu_psi    = `mu_pr[5]`,
-    mu_delta  = `mu_pr[6]`,
-    mu_kappa  = `mu_pr[7]`
-  )
+  select(any_of(c("mu_alpha", "mu_beta", "mu_lambda", "mu_delta", "mu_eta")))
 
 color_scheme_set("green")
 
 p_corr <- mcmc_pairs(
   draws_wide,
-  pars = colnames(draws_wide),
-  off_diag_args = list(size = 0.5, alpha = 0.25),
+  off_diag_args = list(size = 0.5, alpha = 0.2),
   diag_fun = "hist"
 )
 
 print(p_corr)
 
 # -------------------------------------------------------------------
-# 6. NUMERIC CORRELATION MATRIX (OPTIONAL)
+# 6. NUMERIC SUMMARY
 # -------------------------------------------------------------------
-cor_matrix <- cor(draws_wide)
+cat("\n--- POSTERIOR SUMMARY 
+summary_stats <- draws_wide %>%
+  pivot_longer(cols = everything()) %>%
+  group_by(name) %>%
+  summarize(
+    mean = mean(value),
+    median = median(value),
+    sd = sd(value),
+    q5 = quantile(value, 0.05),
+    q95 = quantile(value, 0.95)
+  )
 
-cat("\n--- POSTERIOR CORRELATION MATRIX (mu parameters) ---\n")
-print(round(cor_matrix, 3))
+print(summary_stats)
+
+
 
 
 
@@ -1452,148 +1346,243 @@ print(round(cor_matrix, 3))
 
 library(tidyverse)
 library(posterior)
+library(bayesplot)
 library(ggplot2)
-library(ggridges)
 
 # -------------------------------------------------------------------
-# 1. LOAD FIT
+# 1. DEFINE FILES AND LABELS
 # -------------------------------------------------------------------
-load("/Users/bty615/Documents/GitHub/reliable_info_bias/results/fits/Exp12/fit_trunc_simplified_boost_learning_aware_exp11.rdata")
+base_path <- "/Users/bty615/Documents/GitHub/reliable_info_bias/results/fits/Exp12/"
 
-draws <- as_draws_df(fit$draws())
-
-# -------------------------------------------------------------------
-# 2. PARAMETER MAP (INDEX → NAME)
-# -------------------------------------------------------------------
-param_map <- tibble(
-  idx = 1:7,
-  name = c("alpha", "beta", "lambda", "theta", "psi", "delta", "kappa")
+# Mapping the filenames from your screenshot
+file_list <- list(
+  "Exp11 Aware"   = "fit_trunc_simplified_learning_boost_aware_exp11.rdata",
+  "Exp11 Unaware" = "fit_trunc_simplified_learning_boost_unaware_exp11.rdata",
+  "Exp12 Aware"   = "fit_trunc_simplified_learning_boost_aware_exp12.rdata"
 )
 
 # -------------------------------------------------------------------
-# 3. GROUP-LEVEL PARAMETERS (TRANSFORMED)
+# 2. EXTRACTION FUNCTION (Updated for 5 params)
 # -------------------------------------------------------------------
-group_params <- draws %>%
-  transmute(
-    alpha  = pnorm(`mu_pr[1]`),
-    beta   = `mu_pr[2]`,
-    lambda = exp(`mu_pr[3]`),
-    theta  = 5 * pnorm(`mu_pr[4]`),
-    psi    = 5 * pnorm(`mu_pr[5]`),
-    delta  = pnorm(`mu_pr[6]`),
-    kappa  = 1 + 2 * pnorm(`mu_pr[7]`)
-  ) %>%
-  pivot_longer(
-    everything(),
-    names_to = "parameter",
-    values_to = "value"
+extract_mu_all <- function(path, label) {
+  if(!file.exists(path)) {
+    message("File missing: ", path)
+    return(NULL)
+  }
+  
+  load(path) # Loads the 'fit' object
+  
+  d <- as_draws_df(fit$draws())
+  
+  # Mapping: 1=alpha, 2=beta, 3=lambda, 4=delta, 5=eta
+  mu_map <- c(
+    "mu_pr[1]" = "mu_alpha",
+    "mu_pr[2]" = "mu_beta",
+    "mu_pr[3]" = "mu_lambda",
+    "mu_pr[4]" = "mu_delta",
+    "mu_pr[5]" = "mu_eta"
   )
-
-# -------------------------------------------------------------------
-# 4. INDIVIDUAL-LEVEL PARAMETERS (TRANSFORMED)
-# -------------------------------------------------------------------
-# param_raw[n, p] → subject n, parameter p
-
-individual_params <- draws %>%
-  select(starts_with("param_raw[")) %>%
-  pivot_longer(
-    everything(),
-    names_to = "param",
-    values_to = "z"
-  ) %>%
-  extract(
-    param,
-    into = c("subject", "idx"),
-    regex = "param_raw\\[(\\d+),(\\d+)\\]",
-    convert = TRUE
-  ) %>%
-  left_join(param_map, by = "idx") %>%
-  mutate(
-    value = case_when(
-      name == "alpha"  ~ pnorm(z),
-      name == "beta"   ~ z,
-      name == "lambda" ~ exp(z),
-      name == "theta"  ~ 5 * pnorm(z),
-      name == "psi"    ~ 5 * pnorm(z),
-      name == "delta"  ~ pnorm(z),
-      name == "kappa"  ~ 1 + 2 * pnorm(z)
+  
+  mu_df <- d %>%
+    select(all_of(names(mu_map))) %>%
+    rename(!!!setNames(names(mu_map), mu_map)) %>%
+    mutate(Condition = label) %>%
+    pivot_longer(
+      cols = starts_with("mu_"), 
+      names_to = "param", 
+      values_to = "value"
     )
-  )
+  
+  return(mu_df)
+}
+
+# Combine all datasets
+all_data <- map2_df(file_list, names(file_list), ~ {
+  full_path <- file.path(base_path, .x)
+  extract_mu_all(full_path, .y)
+})
 
 # -------------------------------------------------------------------
-# 5. PLOT 1: GROUP-LEVEL POSTERIORS (INTERPRETABLE SCALE)
+# 3. PARAMETER LABELS (PARSED)
 # -------------------------------------------------------------------
-p_group <- ggplot(group_params, aes(x = value)) +
+param_labels <- c(
+  "mu_alpha"  = expression(paste(mu[alpha], " (Evidence Sensitivity)")),
+  "mu_beta"   = expression(paste(mu[beta], " (Bias)")),
+  "mu_lambda" = expression(paste(mu[lambda], " (Decay)")),
+  "mu_delta"  = expression(paste(mu[delta], " (Persistence)")),
+  "mu_eta"    = expression(paste(mu[eta], " (Noise/Eta)"))
+)
+
+# Using your original Green as the anchor
+model_color_aware   <- "#1B5E20" # Original Dark Green
+model_color_unaware <- "#81C784" # Lighter Green for contrast
+model_color_exp12   <- "#2E7D32" # Medium Green for Exp12
+
+# -------------------------------------------------------------------
+# 4. OVERLAY HISTOGRAM PLOT
+# -------------------------------------------------------------------
+p_overlay <- ggplot(all_data, aes(x = value, fill = Condition)) +
   geom_histogram(
-    bins = 60,
-    fill = "#1B5E20",
-    color = "black",
-    alpha = 0.75
+    bins = 80, 
+    alpha = 0.6, 
+    position = "identity", # This overlays them instead of stacking them
+    color = "black", 
+    linewidth = 0.1
   ) +
-  facet_wrap(~parameter, scales = "free", ncol = 3) +
-  theme_bw(base_size = 15) +
+  facet_wrap(
+    ~ param, 
+    scales = "free", 
+    ncol = 3, 
+    labeller = as_labeller(param_labels, default = label_parsed)
+  ) +
+  scale_fill_manual(values = c(
+    "Exp11 Aware"   = model_color_aware,
+    "Exp11 Unaware" = model_color_unaware,
+    "Exp12 Aware"   = model_color_exp12
+  )) +
+  theme_bw(base_size = 16) +
+  theme(
+    panel.background = element_rect(fill = "white", color = NA),
+    strip.background = element_rect(fill = "gray90", color = "gray50"),
+    strip.text       = element_text(face = "bold", size = 11),
+    legend.position  = "bottom"
+  ) +
   labs(
-    title = "Group-level Posterior Distributions",
-    subtitle = "Interpretable parameter scale",
-    x = "Parameter value",
+    title = "Posterior Overlay: Aware vs. Unaware",
+    subtitle = "Boost Learning Group-level parameters",
+    x = "Posterior Sample Value (Latent Scale)",
     y = "Frequency"
-  )
-
-print(p_group)
-
-# -------------------------------------------------------------------
-# 6. PLOT 2: INDIVIDUAL DIFFERENCES (RIDGE PLOTS)
-# -------------------------------------------------------------------
-p_indiv <- individual_params %>%
-  filter(parameter %in% c("delta", "kappa", "alpha")) %>%
-  ggplot(aes(x = value, y = factor(subject))) +
-  geom_density_ridges(
-    scale = 2,
-    rel_min_height = 0.01,
-    fill = "#1B5E20",
-    alpha = 0.6
-  ) +
-  facet_wrap(~parameter, scales = "free_x") +
-  theme_ridges(base_size = 14) +
-  labs(
-    title = "Individual-level Parameter Distributions",
-    x = "Parameter value",
-    y = "Participant"
-  )
-
-print(p_indiv)
-
-# -------------------------------------------------------------------
-# 7. OPTIONAL: GROUP vs INDIVIDUAL OVERLAY (DELTA & KAPPA)
-# -------------------------------------------------------------------
-p_overlay <- individual_params %>%
-  filter(parameter %in% c("delta", "kappa")) %>%
-  ggplot(aes(x = value)) +
-  geom_density(
-    data = group_params %>% filter(parameter %in% c("delta", "kappa")),
-    aes(x = value),
-    color = "black",
-    linewidth = 1.2
-  ) +
-  geom_density(
-    aes(group = subject),
-    alpha = 0.15,
-    fill = "#1B5E20"
-  ) +
-  facet_wrap(~parameter, scales = "free") +
-  theme_bw(base_size = 14) +
-  labs(
-    title = "Group vs Individual Parameter Distributions",
-    x = "Parameter value",
-    y = "Density"
   )
 
 print(p_overlay)
 
 
 
+library(tidyverse)
+library(posterior)
+library(ggplot2)
 
+# -------------------------------------------------------------------
+# 1. Load fits 
+# -------------------------------------------------------------------
+load("/Users/bty615/Documents/GitHub/reliable_info_bias/results/fits/Exp12/fit_trunc_simplified_learning_boost_aware_exp12.rdata")
+fit_unaware <- fit
 
+load("/Users/bty615/Documents/GitHub/reliable_info_bias/results/fits/Exp12/fit_trunc_simplified_learning_boost_aware_exp11.rdata")
+fit_aware <- fit
+
+load("/Users/bty615/Documents/GitHub/reliable_info_bias/results/fits/Exp12/fit_trunc_simplified_learning_boost_unaware_exp11.rdata")
+fit_explicit <- fit
+
+# -------------------------------------------------------------------
+# 2. Define Param Mapping (Stan index -> Descriptive name)
+# -------------------------------------------------------------------
+# If your Stan model uses mu_pr[1] through [5], we map them here:
+param_map <- c(
+  "mu_pr[1]" = "mu_alpha",
+  "mu_pr[2]" = "mu_beta",
+  "mu_pr[3]" = "mu_lambda",
+  "mu_pr[4]" = "mu_delta",
+  "mu_pr[5]" = "mu_eta"
+)
+
+# -------------------------------------------------------------------
+# 3. Extraction Function
+# -------------------------------------------------------------------
+extract_mu <- function(fit, label) {
+  # Get draws as a data frame
+  d <- as_draws_df(fit$draws())
+  
+  # Find which columns in 'd' match our 'param_map' keys
+  # (handles both 'mu_pr[1]' and 'mu_pr.1.' formats)
+  actual_cols <- intersect(names(param_map), colnames(d))
+  
+  # If empty, try the dot format
+  if(length(actual_cols) == 0) {
+    actual_cols <- colnames(d)[grepl("mu_pr", colnames(d))][1:5]
+  }
+  
+  mu_df <- d %>%
+    select(all_of(actual_cols))
+  
+  # Force set names to ensure they match 'param_labels'
+  colnames(mu_df) <- unname(param_map[1:ncol(mu_df)])
+  
+  mu_df <- mu_df %>%
+    mutate(group = label) %>%
+    pivot_longer(
+      cols = -group, 
+      names_to = "param",
+      values_to = "value"
+    )
+  
+  return(mu_df)
+}
+
+# -------------------------------------------------------------------
+# 4. Prepare Data
+# -------------------------------------------------------------------
+df_all <- bind_rows(
+  extract_mu(fit_unaware,  "Implicit Unaware"),
+  extract_mu(fit_aware,    "Implicit Aware"),
+  extract_mu(fit_explicit, "Explicit Aware")
+)
+
+# Crucial: Ensure 'param' is a factor that matches the keys in 'param_labels'
+df_all$param <- factor(df_all$param, levels = unname(param_map))
+
+df_all$group <- factor(df_all$group, levels = c(
+  "Implicit Aware",
+  "Explicit Aware",
+  "Implicit Unaware"
+))
+
+# -------------------------------------------------------------------
+# 5. Plotting Definitions
+# -------------------------------------------------------------------
+param_labels <- c(
+  "mu_alpha"  = "mu[alpha] ~ (Weighting)",
+  "mu_beta"   = "mu[beta] ~ (Intercept)",
+  "mu_lambda" = "mu[lambda] ~ (Sequential ~ Decay)",
+  "mu_delta"  = "mu[delta] ~ (Learning ~ Rate)",
+  "mu_eta"    = "mu[eta] ~ (Confirmation ~ Sensitivity)"
+)
+
+custom_colors <- c(
+  "Explicit Aware"   = "#E69F00",
+  "Implicit Aware"   = "#1B5E20",
+  "Implicit Unaware" = "#A8D08D"
+)
+
+# -------------------------------------------------------------------
+# 6. Final Plot
+# -------------------------------------------------------------------
+p <- ggplot(df_all, aes(x = value, fill = group)) +
+  geom_histogram(
+    position = "identity",
+    bins = 60,
+    alpha = 0.55,
+    color = "black",
+    linewidth = 0.1
+  ) +
+  # Use label_parsed so the math expressions show up correctly
+  facet_wrap(~param, scales = "free", ncol = 3, 
+             labeller = as_labeller(param_labels, default = label_parsed)) +
+  scale_fill_manual(values = custom_colors) +
+  theme_bw(base_size = 14) +
+  theme(
+    legend.position = "bottom",
+    strip.background = element_rect(fill = "gray95"),
+    strip.text = element_text(face = "bold")
+  ) +
+  labs(
+    title = "Posterior Parameter Distributions",
+    x = "Posterior Sample Value",
+    y = "Frequency",
+    fill = "Awareness Group"
+  )
+
+print(p)
 
 
 
@@ -1603,133 +1592,214 @@ print(p_overlay)
 library(tidyverse)
 library(posterior)
 library(ggplot2)
-library(ggridges)
 
 # -------------------------------------------------------------------
-# 1. LOAD FIT
+# 1. Load fits 
 # -------------------------------------------------------------------
-# Ensure this matches your latest file name
-load("/Users/bty615/Documents/GitHub/reliable_info_bias/results/fits/Exp12/fit_trunc_simplified_learning_eta_aware_exp11.rdata")
+load("/Users/bty615/Documents/GitHub/reliable_info_bias/results/fits/Exp12/fit_trunc_simplified_learning_boost_aware_exp12.rdata")
+fit_explicit<- fit
 
-draws <- as_draws_df(fit$draws())
+load("/Users/bty615/Documents/GitHub/reliable_info_bias/results/fits/Exp12/fit_trunc_simplified_learning_boost_aware_exp11.rdata")
+fit_aware <- fit
+
+load("/Users/bty615/Documents/GitHub/reliable_info_bias/results/fits/Exp12/fit_trunc_simplified_learning_boost_unaware_exp11.rdata")
+fit_unaware <- fit
 
 # -------------------------------------------------------------------
-# 2. PARAMETER MAP (INDEX → NAME)
+# 2. Define Param Mapping (Stan index -> Descriptive name)
 # -------------------------------------------------------------------
-param_map <- tibble(
-  idx = 1:7,
-  name = c("alpha", "beta", "lambda", "theta", "psi", "delta", "eta")
+param_map <- c(
+  "mu_pr[1]" = "mu_alpha",
+  "mu_pr[2]" = "mu_beta",
+  "mu_pr[3]" = "mu_lambda",
+  "mu_pr[4]" = "mu_delta",
+  "mu_pr[5]" = "mu_eta"
 )
 
 # -------------------------------------------------------------------
-# 3. GROUP-LEVEL PARAMETERS (TRANSFORMED)
+# 3. Extraction Function (With Transformations)
 # -------------------------------------------------------------------
-group_params <- draws %>%
-  transmute(
-    alpha  = pnorm(`mu_pr[1]`),
-    beta   = `mu_pr[2]`,
-    lambda = pnorm(`mu_pr[3]`),
-    theta  = 1.0, # FIXED
-    psi    = 1.0, # FIXED
-    delta  = pnorm(`mu_pr[6]`),
-    eta    = pnorm(`mu_pr[7]`)
-  ) %>%
-  pivot_longer(
-    everything(),
-    names_to = "parameter",
-    values_to = "value"
-  )
+extract_mu <- function(fit, label) {
+  d <- as_draws_df(fit$draws())
+  
+  # 1. Handle potential naming differences ([1] vs .1.)
+  actual_cols <- intersect(names(param_map), colnames(d))
+  if(length(actual_cols) == 0) {
+    actual_cols <- colnames(d)[grepl("mu_pr", colnames(d))][1:5]
+  }
+  
+  mu_df <- d %>% select(all_of(actual_cols))
+  
+  # 2. Rename to internal names for easier math
+  colnames(mu_df) <- unname(param_map[1:ncol(mu_df)])
+  
+  # 3. Apply the Stan transformations to get the "Physical" values
+  mu_df <- mu_df %>%
+    mutate(
+      mu_alpha  = pnorm(mu_alpha),       # Squashed 0 to 1
+      mu_lambda = pnorm(mu_lambda),      # Squashed 0 to 1
+      mu_delta  = pnorm(mu_delta) * 2    # Squashed 0 to 1, then stretched to 2
+      # mu_beta and mu_eta remain untransformed per your Stan code
+    ) %>%
+    mutate(group = label) %>%
+    pivot_longer(cols = -group, names_to = "param", values_to = "value")
+  
+  return(mu_df)
+}
 
 # -------------------------------------------------------------------
-# 4. INDIVIDUAL-LEVEL PARAMETERS (TRANSFORMED)
+# 4. Prepare Data
 # -------------------------------------------------------------------
-individual_params <- draws %>%
-  select(starts_with("param_raw[")) %>%
-  pivot_longer(
-    everything(),
-    names_to = "param_string",
-    values_to = "z"
-  ) %>%
-  extract(
-    param_string,
-    into = c("subject", "idx"),
-    regex = "param_raw\\[(\\d+),(\\d+)\\]",
-    convert = TRUE
-  ) %>%
-  left_join(param_map, by = "idx") %>%
-  # We use the mu_pr and sigma_pr columns from 'draws' for each sample
-  mutate(
-    mu = case_when(
-      idx == 1 ~ draws[[paste0("mu_pr[1]")]][1:n()],
-      idx == 2 ~ draws[[paste0("mu_pr[2]")]][1:n()],
-      idx == 3 ~ draws[[paste0("mu_pr[3]")]][1:n()],
-      idx == 6 ~ draws[[paste0("mu_pr[6]")]][1:n()],
-      idx == 7 ~ draws[[paste0("mu_pr[7]")]][1:n()],
-      TRUE     ~ 0
-    ),
-    sigma = case_when(
-      idx == 1 ~ draws[[paste0("sigma_pr[1]")]][1:n()],
-      idx == 2 ~ draws[[paste0("sigma_pr[2]")]][1:n()],
-      idx == 3 ~ draws[[paste0("sigma_pr[3]")]][1:n()],
-      idx == 6 ~ draws[[paste0("sigma_pr[6]")]][1:n()],
-      idx == 7 ~ draws[[paste0("sigma_pr[7]")]][1:n()],
-      TRUE     ~ 0
-    )
-  ) %>%
-  mutate(
-    value = case_when(
-      name == "alpha"  ~ pnorm(mu + sigma * z),
-      name == "beta"   ~ mu + sigma * z,
-      name == "lambda" ~ pnorm(mu + sigma * z),
-      name == "theta"  ~ 1.0,
-      name == "psi"    ~ 1.0,
-      name == "delta"  ~ pnorm(mu + sigma * z),
-      name == "eta"    ~ pnorm(mu + sigma * z)
-    )
-  )
+df_all <- bind_rows(
+  extract_mu(fit_unaware,  "Implicit Unaware"),
+  extract_mu(fit_aware,    "Implicit Aware"),
+  extract_mu(fit_explicit, "Explicit Aware")
+)
+
+# Ensure 'param' matches labels for the facet titles
+df_all$param <- factor(df_all$param, levels = unname(param_map))
+df_all$group <- factor(df_all$group, levels = c("Implicit Aware", "Explicit Aware", "Implicit Unaware"))
 
 # -------------------------------------------------------------------
-# 5. PLOT 1: GROUP-LEVEL POSTERIORS
+# 5. Plotting Definitions
 # -------------------------------------------------------------------
-# We filter out theta and psi because they are constants (value = 1.0)
-p_group <- group_params %>% 
-  filter(!parameter %in% c("theta", "psi")) %>%
-  ggplot(aes(x = value)) +
-  geom_histogram(bins = 50, fill = "#2E7D32", color = "white", alpha = 0.8) +
-  facet_wrap(~parameter, scales = "free", ncol = 3) +
-  theme_minimal(base_size = 14) +
-  labs(
-    title = "Group-level Posterior Distributions",
-    subtitle = "Continuous Eta Model (Anchored theta/psi = 1.0)",
-    x = "Parameter Value",
-    y = "Frequency"
-  )
+param_labels <- c(
+  "mu_alpha"  = "mu[alpha]",
+  "mu_beta"   = "mu[beta]",
+  "mu_lambda" = "mu[lambda]",
+  "mu_delta"  = "mu[delta]",
+  "mu_eta"    = "mu[eta]"
+)
 
-print(p_group)
+custom_colors <- c(
+  "Explicit Aware"   = "#E69F00",
+  "Implicit Aware"   = "#1B5E20",
+  "Implicit Unaware" = "#A8D08D"
+)
 
 # -------------------------------------------------------------------
-# 6. PLOT 2: INDIVIDUAL DIFFERENCES (RIDGE PLOTS)
+# 6. Final Plot
 # -------------------------------------------------------------------
-# IMPORTANT: We only plot parameters with variance (skip theta/psi)
+ggplot(df_all, aes(x = value, fill = group)) +
+  geom_histogram(position = "identity", bins = 60, alpha = 0.55, color = "black", linewidth = 0.1) +
+  facet_wrap(~param, scales = "free", ncol = 3, 
+             labeller = as_labeller(param_labels, default = label_parsed)) +
+  scale_fill_manual(values = custom_colors) +
+  theme_bw(base_size = 14) +
+  theme(legend.position = "bottom") +
+  labs(title = "Transformed Posterior Parameter Distributions",
+       x = "Parameter Value (Transformed Scale)", y = "Frequency")
 
-p_indiv <- individual_params %>%
-  filter(name %in% c("alpha", "delta", "eta")) %>%
-  ggplot(aes(x = value, y = factor(subject), fill = name)) +
-  geom_density_ridges(
-    scale = 1.5, 
-    rel_min_height = 0.01, 
-    alpha = 0.7, 
-    color = "white"
-  ) +
-  facet_wrap(~name, scales = "free_x") +
-  scale_fill_viridis_d(option = "mako", begin = 0.3, end = 0.7) +
-  theme_ridges(base_size = 12) +
-  theme(legend.position = "none") +
-  labs(
-    title = "Individual Subject Posteriors",
-    subtitle = "Key dynamic parameters: Alpha, Delta, and Eta",
-    x = "Parameter Value",
-    y = "Subject ID"
-  )
 
-print(p_indiv)
+
+
+
+library(tidyverse)
+library(posterior)
+library(ggplot2)
+
+# -------------------------------------------------------------------
+# 1. Load fits 
+# -------------------------------------------------------------------
+# (Make sure these .rdata files contain the NEW 4-parameter 'fit' objects)
+load("/Users/bty615/Documents/GitHub/reliable_info_bias/results/fits/Exp12/Exp12/fit_trunc_simplified_learning_aware_new_exp12.rdata")
+fit_explicit <- fit
+
+load("/Users/bty615/Documents/GitHub/reliable_info_bias/results/fits/Exp12/Exp12/fit_trunc_simplified_learning_aware_new_exp11.rdata")
+fit_aware <- fit
+
+load("/Users/bty615/Documents/GitHub/reliable_info_bias/results/fits/Exp12/Exp12/fit_trunc_simplified_learning_unaware_new_exp11.rdata")
+fit_unaware <- fit
+
+# -------------------------------------------------------------------
+# 2. Define Param Mapping (Stan index -> Descriptive name)
+# -------------------------------------------------------------------
+# Updated to exactly 4 parameters to match your new Stan model
+param_map <- c(
+  "mu_pr[1]" = "mu_alpha",
+  "mu_pr[2]" = "mu_beta",
+  "mu_pr[3]" = "mu_lambda",
+  "mu_pr[4]" = "mu_delta"
+)
+
+# -------------------------------------------------------------------
+# 3. Extraction Function (With Transformations)
+# -------------------------------------------------------------------
+extract_mu <- function(fit, label) {
+  # Get draws as a data frame
+  d <- as_draws_df(fit$draws())
+  
+  # 1. Handle potential naming differences ([1] vs .1.)
+  # This finds which names from param_map exist in the columns
+  actual_cols <- intersect(names(param_map), colnames(d))
+  
+  # If the names match Stan's internal "mu_pr.1." style instead of "mu_pr[1]"
+  if(length(actual_cols) == 0) {
+    # Specifically grab only the first 4 mu_pr columns
+    mu_cols <- colnames(d)[grepl("mu_pr", colnames(d))]
+    actual_cols <- mu_cols[1:4] 
+  }
+  
+  mu_df <- d %>% select(all_of(actual_cols))
+  
+  # 2. Rename to internal names (mu_alpha, mu_beta, etc.)
+  # We use the first 4 elements of param_map
+  colnames(mu_df) <- unname(param_map[1:ncol(mu_df)])
+  
+  # 3. Apply the Stan transformations 
+  mu_df <- mu_df %>%
+    mutate(
+      mu_alpha  = pnorm(mu_alpha),       # [0, 1]
+      mu_lambda = pnorm(mu_lambda),      # [0, 1]
+      mu_delta  = pnorm(mu_delta) * 2.0  # [0, 2]
+      # mu_beta remains untransformed
+    ) %>%
+    mutate(group = label) %>%
+    pivot_longer(cols = -group, names_to = "param", values_to = "value")
+  
+  return(mu_df)
+}
+
+# -------------------------------------------------------------------
+# 4. Prepare Data
+# -------------------------------------------------------------------
+df_all <- bind_rows(
+  extract_mu(fit_unaware,  "Implicit Unaware"),
+  extract_mu(fit_aware,    "Implicit Aware"),
+  extract_mu(fit_explicit, "Explicit Aware")
+)
+
+# Ensure 'param' matches labels for the facet titles
+df_all$param <- factor(df_all$param, levels = unname(param_map))
+df_all$group <- factor(df_all$group, levels = c("Implicit Aware", "Explicit Aware", "Implicit Unaware"))
+
+# -------------------------------------------------------------------
+# 5. Plotting Definitions
+# -------------------------------------------------------------------
+param_labels <- c(
+  "mu_alpha"  = "mu[alpha]",
+  "mu_beta"   = "mu[beta]",
+  "mu_lambda" = "mu[lambda]",
+  "mu_delta"  = "mu[delta]"
+)
+
+custom_colors <- c(
+  "Explicit Aware"   = "#E69F00",
+  "Implicit Aware"   = "#1B5E20",
+  "Implicit Unaware" = "#A8D08D"
+)
+
+# -------------------------------------------------------------------
+# 6. Final Plot
+# -------------------------------------------------------------------
+ggplot(df_all, aes(x = value, fill = group)) +
+  geom_histogram(position = "identity", bins = 60, alpha = 0.55, color = "black", linewidth = 0.1) +
+  facet_wrap(~param, scales = "free", ncol = 2, # Changed to 2 columns for 4 params
+             labeller = as_labeller(param_labels, default = label_parsed)) +
+  scale_fill_manual(values = custom_colors) +
+  theme_bw(base_size = 14) +
+  theme(legend.position = "bottom") +
+  labs(title = "Transformed Posterior Parameter Distributions",
+       subtitle = "4-Parameter Model: alpha, beta, lambda, delta [0,2]",
+       x = "Parameter Value (Transformed Scale)", 
+       y = "Frequency")

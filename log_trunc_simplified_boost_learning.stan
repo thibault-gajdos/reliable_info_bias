@@ -34,7 +34,7 @@ functions {
  // param_raw - the individual's deviation from the group 
  // Phi_approx = Cumulative Normal Distribution, it squashes any number into the range (0,1). 
 
-      vector[6] params;              // FIX: psi removed, theta fixed
+      vector[5] params;              // FIX: psi removed, theta fixed
       params[1] = Phi_approx(mu_pr[1] + sigma_pr[1] * param_raw[n, 1]); // alpha
       params[2] = mu_pr[2] + sigma_pr[2] * param_raw[n, 2];             // beta
       params[3] = Phi_approx(mu_pr[3] + sigma_pr[3] * param_raw[n, 3]); // lambda
@@ -105,9 +105,9 @@ functions {
     return lp;
   }
   
-  // functions identical in logic to the main loop
-  // compute_evidence replicated the within trial cue loop, it returns a vector of 
-  // 2 values (blue evidence, red evidence)
+ // functions identical in logic to the main loop
+ // compute_evidence replicated the within trial cue loop, it returns a vector of 
+ // 2 values (blue evidence, red evidence)
   
   vector compute_evidence(int sample_size, array[] int color_data, array[] real proba_data, 
                           real alpha, real beta, real lambda, real V_b, real eta) {
@@ -191,6 +191,14 @@ model {
 // runs after the model has finished fitting
 
 generated quantities {
+    //  HIERARCHICAL GROUP TRANSFORMATION ---
+
+    real mu_alpha = Phi_approx(mu_pr[1]);
+    real mu_beta  = mu_pr[2];
+    real mu_lambda = Phi_approx(mu_pr[3]);
+    real mu_delta = Phi_approx(mu_pr[4]) * 2;
+    real mu_eta   = mu_pr[5];
+
     matrix[N, 5] params;
     array[N, T_max] real y_pred = rep_array(-1.0, N, T_max);
     vector[sum(Tsubj)] log_lik;
@@ -200,7 +208,7 @@ generated quantities {
         params[n, 1] = Phi_approx(mu_pr[1] + sigma_pr[1] * param_raw[n, 1]); // alpha
         params[n, 2] = mu_pr[2] + sigma_pr[2] * param_raw[n, 2];             // beta
         params[n, 3] = Phi_approx(mu_pr[3] + sigma_pr[3] * param_raw[n, 3]); // lambda
-        params[n, 4] = Phi_approx(mu_pr[4] + sigma_pr[4] * param_raw[n, 4]); // delta
+        params[n, 4] = Phi_approx(mu_pr[4] + sigma_pr[4] * param_raw[n, 4])*2; // delta
         params[n, 5] = mu_pr[5] + sigma_pr[5] * param_raw[n, 5];             // eta
 
         real beliefcount_blue = 1.0;
