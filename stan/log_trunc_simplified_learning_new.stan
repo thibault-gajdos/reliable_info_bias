@@ -26,7 +26,7 @@ functions {
       int n = slice_indices[i];
     
       vector[4] params;
-      params[1] = Phi_approx(mu_pr[1] + sigma_pr[1] * param_raw[n, 1]);       // alpha
+      params[1] = Phi_approx(mu_pr[1] + sigma_pr[1] * param_raw[n, 1]) * 6;       // alpha
       params[2] = mu_pr[2] + sigma_pr[2] * param_raw[n, 2];                   // beta
       params[3] = Phi_approx(mu_pr[3] + sigma_pr[3] * param_raw[n, 3]);       // lambda
       params[4] = Phi_approx(mu_pr[4] + sigma_pr[4] * param_raw[n, 4]) * 2.0; // delta [0,2]
@@ -47,18 +47,16 @@ functions {
           real l = logit(p);
           int color_val = color[n, t, s];
           
-          // PSI REMOVED
-          real log_odds = params[1] * l + (1 - params[1]) * params[2]; 
+          // CHANGE 1: LINEAR DISTORTION (alpha * l + beta)
+          real log_odds = params[1] * l + params[2]; 
           evidence[color_val] += exp(params[3] * (s - sample_size)) * log_odds;
         }
         
         vector[2] evidence_safe = clamp_vector(evidence, -100, 100);
         
-        // THETA FIXED TO 1.0
         lp += categorical_lpmf(choice[n, t] | softmax(1.0 * evidence_safe));
         
         int x = feedback[n, t];
-        // MATH AS ORIGINALLY REQUESTED (Clamps Removed)
         beliefcount_blue = params[4] * (beliefcount_blue - 1) + x + 1;
         beliefcount_red  = params[4] * (beliefcount_red - 1) + (1 - x) + 1;
         
@@ -77,7 +75,8 @@ functions {
     for (s in 1:sample_size) {
       real p = proba_data[s];
       real l = logit(p);
-      real log_odds = alpha * l + (1 - alpha) * beta;
+      // CHANGE 2: LINEAR DISTORTION (alpha * l + beta)
+      real log_odds = alpha * l + beta;
       evidence[color_data[s]] += exp(lambda * (s - sample_size)) * log_odds;
     }
     return evidence;
@@ -128,14 +127,14 @@ generated quantities {
     array[N, T_max] real y_pred = rep_array(-1.0, N, T_max);
     vector[sum(Tsubj)] log_lik;
 
-    real mu_alpha  = Phi_approx(mu_pr[1]);
+    real mu_alpha  = Phi_approx(mu_pr[1]) * 6;
     real mu_beta   = mu_pr[2];
     real mu_lambda = Phi_approx(mu_pr[3]);
     real mu_delta  = Phi_approx(mu_pr[4]) * 2.0;
 
     int k = 0;
     for (n in 1:N) {
-        ind_params[n, 1] = Phi_approx(mu_pr[1] + sigma_pr[1] * param_raw[n, 1]); 
+        ind_params[n, 1] = Phi_approx(mu_pr[1] + sigma_pr[1] * param_raw[n, 1]) * 6; 
         ind_params[n, 2] = mu_pr[2] + sigma_pr[2] * param_raw[n, 2];             
         ind_params[n, 3] = Phi_approx(mu_pr[3] + sigma_pr[3] * param_raw[n, 3]); 
         ind_params[n, 4] = Phi_approx(mu_pr[4] + sigma_pr[4] * param_raw[n, 4]) * 2.0; 
@@ -154,6 +153,7 @@ generated quantities {
                 proba_trial[i] = proba[n, t, i];
             }
 
+            // CHANGE 3: Logic inside compute_evidence already handles alpha*l + beta
             log_lik[k] = compute_log_lik(sample[n, t], color_trial, proba_trial,
                                          choice[n, t],
                                          ind_params[n, 1], ind_params[n, 2], ind_params[n, 3], V_b);
@@ -172,5 +172,3 @@ generated quantities {
         }
     }
 }
-
-

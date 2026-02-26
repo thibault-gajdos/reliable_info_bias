@@ -1,6 +1,6 @@
 
 rm(list=ls(all=TRUE))  ## efface les données
-setwd("/Users/bty/Documents/GitHub/reliable_info_bias")
+setwd("/Users/bty615/Documents/GitHub/reliable_info_bias")
 source('utils.r')
 
 library(rstan)
@@ -9,33 +9,31 @@ library(tidyverse)
 exp <- 12
 
 #################################################
-##      COMPUTE AIC FOR LLO AND LINEAR
+##      
 ##      EXTRACT GROUP PARAMETERS
 ################################################
 
 ### GROUP Parameter ####
 if (exp == 12){
   
-  log_seq_basic_prior.group <- extract_group('../results/fits/Exp12/fit_trunc_simplified_learning2_aware_exp12.rds', parameters =  c('mu_alpha', 'mu_beta', "mu_delta", 'mu_w1', 'mu_w2', 'mu_w3', 'mu_w4', 'mu_w5','sigma','sigma_w'))
-  save(log_seq_basic_prior.group, file = '../results/summary/summary_group_log_trunc_simplified_aware_exp12.rdata')
+  log_seq_basic_prior.group <- extract_group('../results/fits/exp12/fit_trunc_simplified_learning_aware_exp12.rdata', parameters =  c('mu_alpha', 'mu_beta', "mu_lambda", "mu_delta"))
+  save(log_seq_basic_prior.group, file = '../results/summary/summary_group_log_trunc_simplified_learning_aware_exp12.rdata')
   
 }
 
 ### individual parameters ######
 if (exp == 12){
   
-  log_seq_basic_prior.individual <- extract_individual('../results/fits/Exp12/log_trunc_simplified_aware_exp12.rds', parameters =  c('alpha', 'beta', 'delta', 'w'))
+  log_seq_basic_prior.individual <- extract_individual('../results/fits/exp12/log_trunc_simplified_learning_aware_exp12.rdata', parameters =  c('alpha', 'beta', 'lambda', 'delta'))
   save(log_seq_basic_prior.individual, file = '../results/summary/summary_individual_log_trunc_simplified_aware_exp12.rdata')
   
 } 
 
 
-### individual parameters ######
-if (exp == 12){
-  
-  log_seq_basic_prior.individual <- extract_individual('../results/fits/Exp12/log_trunc_simplified_aware_exp12.rds', parameters =  c('alpha', 'beta', 'delta', 'w'))
-  save(log_seq_basic_prior.individual, file = '../results/summary/summary_individual_log_trunc_simplified_aware_exp12.rdata')
-  
+
+
+
+
   ########################################################
   #   AWARENESS-SPECIFIC GROUP PARAMETER EXTRACTION
 
@@ -149,3 +147,13 @@ if (exp == 12){
       file = "../results/summary/summary_individual_log_trunc_simplified_aware_exp12.rdata"
     )
   }
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  

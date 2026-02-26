@@ -1,5 +1,4 @@
-source('~/thib/projects/tools/R_lib.r')
-setwd('~/thib/projects/reliable_info')
+
 ### LIST OF FUNCIONS
 ## extract_group(fit.name, parameters
 ## extract_indiv(fit.name, parameters
