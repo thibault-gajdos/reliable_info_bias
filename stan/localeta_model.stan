@@ -1,3 +1,34 @@
+//
+// This Stan program defines a simple model, with a
+// vector of values 'y' modeled as normally distributed
+// with mean 'mu' and standard deviation 'sigma'.
+//
+// Learn more about model development with Stan at:
+//
+//    http://mc-stan.org/users/interfaces/rstan.html
+//    https://github.com/stan-dev/rstan/wiki/RStan-Getting-Started
+//
+
+// The input data is a vector 'y' of length 'N'.
+data {
+  int<lower=0> N;
+  vector[N] y;
+}
+
+// The parameters accepted by the model. Our model
+// accepts two parameters 'mu' and 'sigma'.
+parameters {
+  real mu;
+  real<lower=0> sigma;
+}
+
+// The model to be estimated. We model the output
+// 'y' to be normally distributed with mean 'mu'
+// and standard deviation 'sigma'.
+model {
+  y ~ normal(mu, sigma);
+}
+
 functions {
   vector clamp_vector(vector x, real lo, real hi) {
     vector[num_elements(x)] out;
@@ -25,12 +56,11 @@ functions {
     for (i in 1:size(slice_indices)) {
       int n = slice_indices[i];
       
-      vector[5] params; 
+      vector[4] params; 
       params[1] = Phi_approx(mu_pr[1] + sigma_pr[1] * param_raw[n, 1]) * 6; // alpha
-      params[2] = mu_pr[2] + sigma_pr[2] * param_raw[n, 2];               // beta
-      params[3] = Phi_approx(mu_pr[3] + sigma_pr[3] * param_raw[n, 3]); // lambda
-      params[4] = Phi_approx(mu_pr[4] + sigma_pr[4] * param_raw[n, 4]) * 2; // delta
-      params[5] = mu_pr[5] + sigma_pr[5] * param_raw[n, 5]; // eta
+      params[2] = mu_pr[2] + sigma_pr[2] * param_raw[n, 2];                 // beta
+      params[3] = Phi_approx(mu_pr[3] + sigma_pr[3] * param_raw[n, 3]);      // lambda
+      params[4] = mu_pr[4] + sigma_pr[4] * param_raw[n, 4];                 // eta
 
       real beliefcount_blue = 1.0; 
       real beliefcount_red = 1.0;  
@@ -49,7 +79,6 @@ functions {
           real l = logit(p);
           int color_val = color[n, t, s];
           
-        
           real log_odds = params[1] * l + params[2];
           
           real a;
@@ -58,7 +87,8 @@ functions {
           } else {
             a = 2 * (1 - V_b_clamped) - 1; 
           }
-          real current_kappa = exp(params[5] * a);
+
+          real current_kappa = exp(params[4] * a);
 
           evidence[color_val] += exp(params[3] * (s - sample_size)) * log_odds * current_kappa;
         }
@@ -67,8 +97,8 @@ functions {
         lp += categorical_lpmf(choice[n, t] | softmax(evidence_safe));
 
         int x = feedback[n, t];
-        beliefcount_blue = params[4] * (beliefcount_blue - 1) + x + 1;
-        beliefcount_red  = params[4] * (beliefcount_red  - 1) + (1 - x) + 1;
+        beliefcount_blue = beliefcount_blue + x;
+        beliefcount_red  = beliefcount_red + (1 - x);
         V_b = beliefcount_blue / (beliefcount_blue + beliefcount_red);
       }
     }
@@ -86,7 +116,6 @@ functions {
       real l = logit(proba_data[s]);
       int color_val = color_data[s];
       
-      
       real log_odds = alpha * l + beta;
       
       real a;
@@ -95,10 +124,12 @@ functions {
       } else {
           a = 2 * (1 - V_b_clamped) - 1;
       }
+
       real current_kappa = exp(eta * a);
       
       evidence[color_val] += exp(lambda * (s - sample_size)) * log_odds * current_kappa;
     }
+
     return evidence;
   }
 
@@ -126,9 +157,9 @@ data {
 }
 
 parameters {
-  vector[5] mu_pr; 
-  vector<lower=0>[5] sigma_pr;    
-  matrix[N, 5] param_raw;
+  vector[4] mu_pr; 
+  vector<lower=0>[4] sigma_pr;    
+  matrix[N, 4] param_raw;
 }
 
 model {
@@ -148,20 +179,18 @@ generated quantities {
     real mu_alpha = Phi_approx(mu_pr[1]) * 6;
     real mu_beta  = mu_pr[2];
     real mu_lambda = Phi_approx(mu_pr[3]);
-    real mu_delta = Phi_approx(mu_pr[4]) * 2;
-    real mu_eta   = mu_pr[5];
+    real mu_eta   = mu_pr[4];
 
-    matrix[N, 5] params;
+    matrix[N, 4] params;
     array[N, T_max] real y_pred = rep_array(-1.0, N, T_max);
     vector[sum(Tsubj)] log_lik;
 
     int k = 0;
     for (n in 1:N) {
         params[n, 1] = Phi_approx(mu_pr[1] + sigma_pr[1] * param_raw[n, 1]) * 6; // alpha
-        params[n, 2] = mu_pr[2] + sigma_pr[2] * param_raw[n, 2];               // beta
-        params[n, 3] = Phi_approx(mu_pr[3] + sigma_pr[3] * param_raw[n, 3]); // lambda
-        params[n, 4] = Phi_approx(mu_pr[4] + sigma_pr[4] * param_raw[n, 4])*2; // delta
-        params[n, 5] = mu_pr[5] + sigma_pr[5] * param_raw[n, 5];               // eta
+        params[n, 2] = mu_pr[2] + sigma_pr[2] * param_raw[n, 2];                 // beta
+        params[n, 3] = Phi_approx(mu_pr[3] + sigma_pr[3] * param_raw[n, 3]);      // lambda
+        params[n, 4] = mu_pr[4] + sigma_pr[4] * param_raw[n, 4];                 // eta
 
         real beliefcount_blue = 1.0;
         real beliefcount_red = 1.0;
@@ -172,6 +201,7 @@ generated quantities {
             int sample_size = sample[n, t];
             array[I_max] int color_trial;
             array[I_max] real proba_trial;
+
             for (i in 1:I_max) {
                 color_trial[i] = color[n, t, i];
                 proba_trial[i] = proba[n, t, i];
@@ -180,21 +210,19 @@ generated quantities {
             log_lik[k] = compute_log_lik(sample_size, color_trial, proba_trial,
                                          choice[n, t],
                                          params[n, 1], params[n, 2], params[n, 3],
-                                         V_b, params[n, 5]);
+                                         V_b, params[n, 4]);
 
             vector[2] evidence = compute_evidence(sample_size, color_trial, proba_trial,
                                                   params[n, 1], params[n, 2], params[n, 3],
-                                                  V_b, params[n, 5]);
+                                                  V_b, params[n, 4]);
 
             vector[2] evidence_safe = clamp_vector(evidence, -100, 100);
             y_pred[n, t] = categorical_rng(softmax(evidence_safe));
 
             int x = feedback[n, t];
-            beliefcount_blue = params[n, 4] * (beliefcount_blue - 1) + x + 1;
-            beliefcount_red  = params[n, 4] * (beliefcount_red  - 1) + (1 - x) + 1;
+            beliefcount_blue = beliefcount_blue + x;
+            beliefcount_red  = beliefcount_red + (1 - x);
             V_b = beliefcount_blue / (beliefcount_blue + beliefcount_red);
         }
     }
 }
-
-

@@ -146,7 +146,7 @@ data_list <- list(
 setwd("/Users/bty615/Documents/GitHub/reliable_info_bias/stan")
 
 model <- cmdstan_model(
-  stan_file = "./log_trunc_simplified_boost_learning.stan",
+  stan_file = "./localeta_model.stan",
   force_recompile = TRUE,
   cpp_options = list(
     stan_opencl = FALSE,
@@ -189,19 +189,19 @@ dir.create("./results/loo/exp11_unaware/", recursive = TRUE, showWarnings = FALS
 
 save(
   fit,
-  file = "./results/fits/exp11_unaware/fit_trunc_boost_unaware_exp11.rdata"
+  file = "./results/fits/exp11_unaware/localeta_unaware_exp11.rdata"
 )
 
 save(
   loo_result,
-  file = "./results/loo/exp11_unaware/loo_trunc_boost_unaware_exp11.rdata"
+  file = "./results/loo/exp11_unaware/localeta_unaware_exp11.rdata"
 )
 
 cat("\nSaved fit to:\n")
-cat("./results/fits/exp11_unaware/fit_trunc_boost_unaware_exp11.rdata\n")
+cat("./results/fits/exp11_unaware/localeta_unaware_exp11.rdata\n")
 
 cat("\nSaved LOO to:\n")
-cat("./results/loo/exp11_unaware/loo_trunc_boost_unaware_exp11.rdata\n")
+cat("./results/loo/exp11_unaware/localeta_unaware_exp11.rdata\n")
 
 
 

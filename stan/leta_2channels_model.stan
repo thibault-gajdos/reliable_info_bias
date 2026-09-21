@@ -1,4 +1,6 @@
 functions {
+  real KAPPA() { return 10.0; }
+
   vector clamp_vector(vector x, real lo, real hi) {
     vector[num_elements(x)] out;
     for (i in 1:num_elements(x)) {
@@ -25,11 +27,14 @@ functions {
     for (i in 1:size(slice_indices)) {
       int n = slice_indices[i];
       
-      vector[4] params; 
+      vector[7] params; 
       params[1] = Phi_approx(mu_pr[1] + sigma_pr[1] * param_raw[n, 1]) * 6; // alpha
       params[2] = mu_pr[2] + sigma_pr[2] * param_raw[n, 2];                 // beta
       params[3] = Phi_approx(mu_pr[3] + sigma_pr[3] * param_raw[n, 3]);      // lambda
       params[4] = mu_pr[4] + sigma_pr[4] * param_raw[n, 4];                 // eta
+      params[5] = Phi_approx(mu_pr[5] + sigma_pr[5] * param_raw[n, 5]) * 6; // alpha0
+      params[6] = mu_pr[6] + sigma_pr[6] * param_raw[n, 6];                 // beta0
+      params[7] = Phi_approx(mu_pr[7] + sigma_pr[7] * param_raw[n, 7]);      // delta
 
       real beliefcount_blue = 1.0; 
       real beliefcount_red = 1.0;  
@@ -40,8 +45,10 @@ functions {
         int sample_size = sample[n, t];
         
         real V_b_clamped = fmin(fmax(V_b, V_b_min), V_b_max);
-        real prior_log_odds = log(V_b_clamped / (1 - V_b_clamped));
-        evidence[1] += prior_log_odds;
+        real P = params[5] * logit(V_b_clamped) + params[6];
+        evidence[1] += P;
+
+        real A = tanh(0.5 * KAPPA() * P);
 
         for (s in 1:sample_size) {
           real p = proba[n, t, s];
@@ -50,24 +57,19 @@ functions {
           
           real log_odds = params[1] * l + params[2];
           
-          real a;
-          if (color_val == 1) {
-            a = 2 * V_b_clamped - 1; 
-          } else {
-            a = 2 * (1 - V_b_clamped) - 1; 
-          }
+          real a = (color_val == 1) ? A : -A;
 
-          real current_kappa = exp(params[4] * a);
+          real gain = exp(params[4] * a);
 
-          evidence[color_val] += exp(params[3] * (s - sample_size)) * log_odds * current_kappa;
+          evidence[color_val] += exp(params[3] * (s - sample_size)) * log_odds * gain;
         }
         
         vector[2] evidence_safe = clamp_vector(evidence, -100, 100);
         lp += categorical_lpmf(choice[n, t] | softmax(evidence_safe));
 
         int x = feedback[n, t];
-        beliefcount_blue = beliefcount_blue + x;
-        beliefcount_red  = beliefcount_red + (1 - x);
+        beliefcount_blue = params[7] * (beliefcount_blue - 1) + 1 + x;
+        beliefcount_red  = params[7] * (beliefcount_red  - 1) + 1 + (1 - x);
         V_b = beliefcount_blue / (beliefcount_blue + beliefcount_red);
       }
     }
@@ -75,11 +77,14 @@ functions {
   }
   
   vector compute_evidence(int sample_size, array[] int color_data, array[] real proba_data, 
-                          real alpha, real beta, real lambda, real V_b, real eta) {
+                          real alpha, real beta, real lambda, real V_b, real eta,
+                          real alpha0, real beta0) {
     vector[2] evidence = rep_vector(0.0, 2);
     real V_b_clamped = fmin(fmax(V_b, 0.001), 0.999);
-    real prior_log_odds = log(V_b_clamped / (1 - V_b_clamped));
-    evidence[1] += prior_log_odds;
+    real P = alpha0 * logit(V_b_clamped) + beta0;
+    evidence[1] += P;
+
+    real A = tanh(0.5 * KAPPA() * P);
 
     for (s in 1:sample_size) {
       real l = logit(proba_data[s]);
@@ -87,16 +92,11 @@ functions {
       
       real log_odds = alpha * l + beta;
       
-      real a;
-      if (color_val == 1) {
-          a = 2 * V_b_clamped - 1;
-      } else {
-          a = 2 * (1 - V_b_clamped) - 1;
-      }
+      real a = (color_val == 1) ? A : -A;
 
-      real current_kappa = exp(eta * a);
+      real gain = exp(eta * a);
       
-      evidence[color_val] += exp(lambda * (s - sample_size)) * log_odds * current_kappa;
+      evidence[color_val] += exp(lambda * (s - sample_size)) * log_odds * gain;
     }
 
     return evidence;
@@ -104,9 +104,9 @@ functions {
 
   real compute_log_lik(int sample_size, array[] int color_data, array[] real proba_data, 
                        int choice, real alpha, real beta, real lambda, 
-                       real V_b, real eta) { 
+                       real V_b, real eta, real alpha0, real beta0) { 
     vector[2] evidence = compute_evidence(sample_size, color_data, proba_data, 
-                                          alpha, beta, lambda, V_b, eta); 
+                                          alpha, beta, lambda, V_b, eta, alpha0, beta0); 
     vector[2] evidence_safe = clamp_vector(evidence, -100, 100);
     return categorical_lpmf(choice | softmax(evidence_safe));
   }
@@ -126,13 +126,17 @@ data {
 }
 
 parameters {
-  vector[4] mu_pr; 
-  vector<lower=0>[4] sigma_pr;    
-  matrix[N, 4] param_raw;
+  vector[7] mu_pr; 
+  vector<lower=0>[7] sigma_pr;    
+  matrix[N, 7] param_raw;
 }
 
 model {
-  mu_pr ~ std_normal();
+  mu_pr[1:3] ~ std_normal();
+  mu_pr[4] ~ normal(0, 0.5);   // eta
+  mu_pr[5] ~ std_normal();     // alpha0
+  mu_pr[6] ~ normal(0, 0.5);   // beta0
+  mu_pr[7] ~ std_normal();     // delta
   sigma_pr ~ normal(0, 1);
   to_vector(param_raw) ~ std_normal();
   
@@ -149,8 +153,11 @@ generated quantities {
     real mu_beta  = mu_pr[2];
     real mu_lambda = Phi_approx(mu_pr[3]);
     real mu_eta   = mu_pr[4];
+    real mu_alpha0 = Phi_approx(mu_pr[5]) * 6;
+    real mu_beta0  = mu_pr[6];
+    real mu_delta  = Phi_approx(mu_pr[7]);
 
-    matrix[N, 4] params;
+    matrix[N, 7] params;
     array[N, T_max] real y_pred = rep_array(-1.0, N, T_max);
     vector[sum(Tsubj)] log_lik;
 
@@ -160,6 +167,9 @@ generated quantities {
         params[n, 2] = mu_pr[2] + sigma_pr[2] * param_raw[n, 2];                 // beta
         params[n, 3] = Phi_approx(mu_pr[3] + sigma_pr[3] * param_raw[n, 3]);      // lambda
         params[n, 4] = mu_pr[4] + sigma_pr[4] * param_raw[n, 4];                 // eta
+        params[n, 5] = Phi_approx(mu_pr[5] + sigma_pr[5] * param_raw[n, 5]) * 6; // alpha0
+        params[n, 6] = mu_pr[6] + sigma_pr[6] * param_raw[n, 6];                 // beta0
+        params[n, 7] = Phi_approx(mu_pr[7] + sigma_pr[7] * param_raw[n, 7]);      // delta
 
         real beliefcount_blue = 1.0;
         real beliefcount_red = 1.0;
@@ -179,18 +189,18 @@ generated quantities {
             log_lik[k] = compute_log_lik(sample_size, color_trial, proba_trial,
                                          choice[n, t],
                                          params[n, 1], params[n, 2], params[n, 3],
-                                         V_b, params[n, 4]);
+                                         V_b, params[n, 4], params[n, 5], params[n, 6]);
 
             vector[2] evidence = compute_evidence(sample_size, color_trial, proba_trial,
                                                   params[n, 1], params[n, 2], params[n, 3],
-                                                  V_b, params[n, 4]);
+                                                  V_b, params[n, 4], params[n, 5], params[n, 6]);
 
             vector[2] evidence_safe = clamp_vector(evidence, -100, 100);
             y_pred[n, t] = categorical_rng(softmax(evidence_safe));
 
             int x = feedback[n, t];
-            beliefcount_blue = beliefcount_blue + x;
-            beliefcount_red  = beliefcount_red + (1 - x);
+            beliefcount_blue = params[n, 7] * (beliefcount_blue - 1) + 1 + x;
+            beliefcount_red  = params[n, 7] * (beliefcount_red  - 1) + 1 + (1 - x);
             V_b = beliefcount_blue / (beliefcount_blue + beliefcount_red);
         }
     }
