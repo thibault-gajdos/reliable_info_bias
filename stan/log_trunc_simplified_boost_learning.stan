@@ -49,7 +49,7 @@ functions {
           real l = logit(p);
           int color_val = color[n, t, s];
           
-          // FIXED: Now uses the Basic Distortion (alpha * l + beta) not real log_odds = params[1] * l + (1 - params[1]) * params[2];
+        
           real log_odds = params[1] * l + params[2];
           
           real a;
@@ -86,7 +86,7 @@ functions {
       real l = logit(proba_data[s]);
       int color_val = color_data[s];
       
-      // FIXED: Now uses the Basic "Plus" Distortion (alpha * l + beta)
+      
       real log_odds = alpha * l + beta;
       
       real a;

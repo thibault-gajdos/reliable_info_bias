@@ -1,0 +1,631 @@
+functions {
+
+  vector clamp_vector(vector x, real lo, real hi) {
+    vector[num_elements(x)] out;
+
+    for (i in 1:num_elements(x)) {
+      out[i] = fmin(fmax(x[i], lo), hi);
+    }
+
+    return out;
+  }
+
+
+  // ===========================================================================
+  // GLOBAL ETA APPLIED TO COMBINED SAMPLE EVIDENCE ONLY
+  // ===========================================================================
+  //
+  // sample_evidence contains all reliability-transformed and recency-weighted
+  // samples, but does not yet contain the learned prior.
+  //
+  // The net direction of the samples is:
+  //
+  //     sample_log_odds =
+  //         sample_evidence[1] - sample_evidence[2]
+  //
+  // Positive values favour Blue and negative values favour Red.
+  //
+  // This sample direction is compared with the learned belief V_b:
+  //
+  //     V_b > 0.5 = prior favours Blue
+  //     V_b < 0.5 = prior favours Red
+  //
+  // global_alignment is:
+  //
+  //     positive = combined samples confirm the prior
+  //     negative = combined samples disconfirm the prior
+  //     zero     = samples are balanced or the prior is neutral
+  //
+  // Eta is applied once to the complete sample evidence:
+  //
+  //     global_kappa = exp(eta * global_alignment)
+  //
+  //     eta > 0 = strengthens globally confirming sample evidence
+  //     eta = 0 = no global confirmation/disconfirmation effect
+  //     eta < 0 = strengthens globally disconfirming sample evidence
+  //
+  // The prior is added only after eta has modified the samples. Therefore,
+  // eta does not multiply the prior itself.
+  // ===========================================================================
+
+  vector combine_prior_with_global_eta(
+      vector sample_evidence,
+      real V_b,
+      real eta) {
+
+    real sample_log_odds =
+      sample_evidence[1] - sample_evidence[2];
+
+    real global_alignment;
+    real global_kappa;
+    real prior_log_odds;
+
+    vector[2] evidence;
+
+
+    if (sample_log_odds > 0) {
+
+      // Combined samples favour Blue.
+      global_alignment = 2 * V_b - 1;
+
+    } else if (sample_log_odds < 0) {
+
+      // Combined samples favour Red.
+      global_alignment = 2 * (1 - V_b) - 1;
+
+    } else {
+
+      // Eta has no effect when the combined samples are balanced.
+      global_alignment = 0;
+    }
+
+
+    global_kappa =
+      exp(eta * global_alignment);
+
+
+    // Eta multiplies the combined sample evidence only.
+    evidence =
+      sample_evidence * global_kappa;
+
+
+    // The learned prior is added afterwards and is not scaled by eta.
+    prior_log_odds =
+      log(V_b / (1 - V_b));
+
+    evidence[1] +=
+      prior_log_odds;
+
+
+    return evidence;
+  }
+
+
+  real partial_sum(
+      array[] int slice_indices,
+      int start,
+      int end,
+      vector mu_pr,
+      vector sigma_pr,
+      array[] int Tsubj,
+      array[,] int sample,
+      array[,,] int color,
+      array[,,] real proba,
+      array[,] int choice,
+      matrix param_raw,
+      array[,] int feedback) {
+
+    real lp = 0;
+
+    real V_b_min = 0.001;
+    real V_b_max = 0.999;
+
+
+    for (i in 1:size(slice_indices)) {
+
+      int n = slice_indices[i];
+
+      vector[5] params;
+
+
+      params[1] =
+        Phi_approx(
+          mu_pr[1] +
+          sigma_pr[1] * param_raw[n, 1]
+        ) * 6;
+        // alpha
+
+
+      params[2] =
+        mu_pr[2] +
+        sigma_pr[2] * param_raw[n, 2];
+        // beta
+
+
+      params[3] =
+        Phi_approx(
+          mu_pr[3] +
+          sigma_pr[3] * param_raw[n, 3]
+        );
+        // lambda
+
+
+      params[4] =
+        Phi_approx(
+          mu_pr[4] +
+          sigma_pr[4] * param_raw[n, 4]
+        ) * 2;
+        // delta
+
+
+      params[5] =
+        mu_pr[5] +
+        sigma_pr[5] * param_raw[n, 5];
+        // eta
+
+
+      real beliefcount_blue = 1.0;
+
+      real beliefcount_red = 1.0;
+
+      real V_b =
+        beliefcount_blue /
+        (beliefcount_blue + beliefcount_red);
+
+
+      for (t in 1:Tsubj[n]) {
+
+        // ===============================================================
+        // 
+        // Keep sample evidence separate from the prior while processing
+        // the sequence. There is no eta multiplier on individual samples.
+        // ===============================================================
+
+        vector[2] sample_evidence =
+          rep_vector(0.0, 2);
+
+        int sample_size =
+          sample[n, t];
+
+        real V_b_clamped =
+          fmin(
+            fmax(V_b, V_b_min),
+            V_b_max
+          );
+
+
+        for (s in 1:sample_size) {
+
+          real p =
+            proba[n, t, s];
+
+          real l =
+            logit(p);
+
+          int color_val =
+            color[n, t, s];
+
+          real log_odds =
+            params[1] * l +
+            params[2];
+
+
+          // Eta is not applied here.
+          // Samples are weighted only by reliability and sequence position.
+
+          sample_evidence[color_val] +=
+            exp(
+              params[3] *
+              (s - sample_size)
+            ) *
+            log_odds;
+        }
+
+
+        // ===============================================================
+        // CHANGE 3:
+        // After all samples have been combined:
+        //
+        // 1. Determine whether their total direction confirms the prior.
+        // 2. Apply eta once to the combined sample evidence.
+        // 3. Add the learned prior afterwards.
+        // ===============================================================
+
+        vector[2] evidence_global =
+          combine_prior_with_global_eta(
+            sample_evidence,
+            V_b_clamped,
+            params[5]
+          );
+
+
+        vector[2] evidence_safe =
+          clamp_vector(
+            evidence_global,
+            -100,
+            100
+          );
+
+
+        lp += categorical_lpmf(
+          choice[n, t] |
+          softmax(evidence_safe)
+        );
+
+
+        int x =
+          feedback[n, t];
+
+
+        beliefcount_blue =
+          params[4] *
+          (beliefcount_blue - 1) +
+          x +
+          1;
+
+
+        beliefcount_red =
+          params[4] *
+          (beliefcount_red - 1) +
+          (1 - x) +
+          1;
+
+
+        V_b =
+          beliefcount_blue /
+          (beliefcount_blue + beliefcount_red);
+      }
+    }
+
+
+    return lp;
+  }
+
+
+  vector compute_evidence(
+      int sample_size,
+      array[] int color_data,
+      array[] real proba_data,
+      real alpha,
+      real beta,
+      real lambda,
+      real V_b,
+      real eta) {
+
+    // ===============================================================
+    // CHANGE 4:
+    // Generated quantities must reproduce exactly the same global
+    // sample-evidence eta mechanism as the fitted likelihood.
+    // ===============================================================
+
+    vector[2] sample_evidence =
+      rep_vector(0.0, 2);
+
+
+    real V_b_clamped =
+      fmin(
+        fmax(V_b, 0.001),
+        0.999
+      );
+
+
+    for (s in 1:sample_size) {
+
+      real l =
+        logit(proba_data[s]);
+
+      int color_val =
+        color_data[s];
+
+      real log_odds =
+        alpha * l +
+        beta;
+
+
+      // No sample-level eta multiplier is applied here.
+
+      sample_evidence[color_val] +=
+        exp(
+          lambda *
+          (s - sample_size)
+        ) *
+        log_odds;
+    }
+
+
+    // Eta is applied once to the combined samples.
+    // The prior is added afterwards.
+
+    return combine_prior_with_global_eta(
+      sample_evidence,
+      V_b_clamped,
+      eta
+    );
+  }
+
+
+  real compute_log_lik(
+      int sample_size,
+      array[] int color_data,
+      array[] real proba_data,
+      int choice,
+      real alpha,
+      real beta,
+      real lambda,
+      real V_b,
+      real eta) {
+
+    vector[2] evidence =
+      compute_evidence(
+        sample_size,
+        color_data,
+        proba_data,
+        alpha,
+        beta,
+        lambda,
+        V_b,
+        eta
+      );
+
+
+    vector[2] evidence_safe =
+      clamp_vector(
+        evidence,
+        -100,
+        100
+      );
+
+
+    return categorical_lpmf(
+      choice |
+      softmax(evidence_safe)
+    );
+  }
+}
+
+
+data {
+
+  int<lower=1> N;
+
+  int<lower=1> T_max;
+
+  int<lower=1> I_max;
+
+  array[N] int<lower=1> Tsubj;
+
+  array[N, T_max] int sample;
+
+  array[N, T_max, I_max] int color;
+
+  array[N, T_max, I_max] real proba;
+
+  array[N, T_max] int choice;
+
+  array[N, T_max] int feedback;
+
+  int<lower=5> grainsize;
+}
+
+
+parameters {
+
+  vector[5] mu_pr;
+
+  vector<lower=0>[5] sigma_pr;
+
+  matrix[N, 5] param_raw;
+}
+
+
+model {
+
+  mu_pr ~ std_normal();
+
+  sigma_pr ~ normal(0, 1);
+
+  to_vector(param_raw) ~ std_normal();
+
+
+  array[N] int indices;
+
+
+  for (n in 1:N) {
+    indices[n] = n;
+  }
+
+
+  target += reduce_sum(
+    partial_sum,
+    indices,
+    grainsize,
+    mu_pr,
+    sigma_pr,
+    Tsubj,
+    sample,
+    color,
+    proba,
+    choice,
+    param_raw,
+    feedback
+  );
+}
+
+
+generated quantities {
+
+  real mu_alpha =
+    Phi_approx(mu_pr[1]) * 6;
+
+  real mu_beta =
+    mu_pr[2];
+
+  real mu_lambda =
+    Phi_approx(mu_pr[3]);
+
+  real mu_delta =
+    Phi_approx(mu_pr[4]) * 2;
+
+  real mu_eta =
+    mu_pr[5];
+
+
+  matrix[N, 5] params;
+
+
+  array[N, T_max] real y_pred =
+    rep_array(
+      -1.0,
+      N,
+      T_max
+    );
+
+
+  vector[sum(Tsubj)] log_lik;
+
+
+  int k = 0;
+
+
+  for (n in 1:N) {
+
+    params[n, 1] =
+      Phi_approx(
+        mu_pr[1] +
+        sigma_pr[1] * param_raw[n, 1]
+      ) * 6;
+      // alpha
+
+
+    params[n, 2] =
+      mu_pr[2] +
+      sigma_pr[2] * param_raw[n, 2];
+      // beta
+
+
+    params[n, 3] =
+      Phi_approx(
+        mu_pr[3] +
+        sigma_pr[3] * param_raw[n, 3]
+      );
+      // lambda
+
+
+    params[n, 4] =
+      Phi_approx(
+        mu_pr[4] +
+        sigma_pr[4] * param_raw[n, 4]
+      ) * 2;
+      // delta
+
+
+    params[n, 5] =
+      mu_pr[5] +
+      sigma_pr[5] * param_raw[n, 5];
+      // eta
+
+
+    real beliefcount_blue = 1.0;
+
+    real beliefcount_red = 1.0;
+
+    real V_b =
+      beliefcount_blue /
+      (beliefcount_blue + beliefcount_red);
+
+
+    for (t in 1:Tsubj[n]) {
+
+      k += 1;
+
+
+      int sample_size =
+        sample[n, t];
+
+
+      array[I_max] int color_trial;
+
+      array[I_max] real proba_trial;
+
+
+      for (i in 1:I_max) {
+
+        color_trial[i] =
+          color[n, t, i];
+
+        proba_trial[i] =
+          proba[n, t, i];
+      }
+
+
+      // ===============================================================
+      // CHANGE 5:
+      // Both log likelihood and posterior predictions use the new
+      // combined-sample global eta mechanism.
+      // ===============================================================
+
+      log_lik[k] =
+        compute_log_lik(
+          sample_size,
+          color_trial,
+          proba_trial,
+          choice[n, t],
+          params[n, 1],
+          params[n, 2],
+          params[n, 3],
+          V_b,
+          params[n, 5]
+        );
+
+
+      vector[2] evidence =
+        compute_evidence(
+          sample_size,
+          color_trial,
+          proba_trial,
+          params[n, 1],
+          params[n, 2],
+          params[n, 3],
+          V_b,
+          params[n, 5]
+        );
+
+
+      vector[2] evidence_safe =
+        clamp_vector(
+          evidence,
+          -100,
+          100
+        );
+
+
+      y_pred[n, t] =
+        categorical_rng(
+          softmax(evidence_safe)
+        );
+
+
+      int x =
+        feedback[n, t];
+
+
+      beliefcount_blue =
+        params[n, 4] *
+        (beliefcount_blue - 1) +
+        x +
+        1;
+
+
+      beliefcount_red =
+        params[n, 4] *
+        (beliefcount_red - 1) +
+        (1 - x) +
+        1;
+
+
+      V_b =
+        beliefcount_blue /
+        (beliefcount_blue + beliefcount_red);
+    }
+  }
+}

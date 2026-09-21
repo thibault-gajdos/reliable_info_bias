@@ -1,136 +1,235 @@
-
-#rm(list=ls(all=TRUE))  ## efface les données
-#source('~/thib/projects/tools/R_lib.r')
-#setwd('~/thib/projects/reliable_info')
-#source('~/thib/projects/reliable_info/utils.r')
+# rm(list = ls(all = TRUE))
 
 library(tidyverse)
 library(posterior)
 library(bayesplot)
 library(cmdstanr)
+library(loo)
 
 ##################################################
-##PREPARE THE DATA
+## PREPARE THE DATA
 ##################################################
 
-#
-load("/Users/bty615/Documents/GitHub/reliable_info_bias/data/data_priorbelief_aware_exp12.rdata")
+load("/Users/bty615/Documents/GitHub/reliable_info_bias/data/data_priorbelief_aware_exp11.rdata")
 
+## Response coding:
+## If ResponseButtonOrder = 1: blue -> 1, red -> 0
+## If ResponseButtonOrder = 0: blue -> 0, red -> 1
+##
+## Recode choice:
+## blue = 1
+## red  = 2
 
-## if Response ResponseButtonOrder= 1: blue->1, red->0
-## if Response ResponseButtonOrder= 0: blue->0, red->1
-## we recode: blue ->1, red ->2
 data <- data %>%
-  mutate(choice = case_when(
-    (Manipulation_ResponseButtonOrder == 1 & Response == 0) ~ 2,
-    (Manipulation_ResponseButtonOrder == 1 & Response == 1) ~ 1,
-    (Manipulation_ResponseButtonOrder == 0 & Response == 0) ~ 1,
-    (Manipulation_ResponseButtonOrder == 0 & Response == 1) ~ 2
-  )) %>%
-  mutate_at(vars(starts_with("color")), ~ ifelse(. == "blue", 1, 2)) %>%
+  mutate(
+    choice = case_when(
+      ResponseButtonOrder == 1 & Response == 0 ~ 2,
+      ResponseButtonOrder == 1 & Response == 1 ~ 1,
+      ResponseButtonOrder == 0 & Response == 0 ~ 1,
+      ResponseButtonOrder == 0 & Response == 1 ~ 2,
+      TRUE ~ NA_real_
+    )
+  ) %>%
+  mutate(
+    across(
+      starts_with("color"),
+      ~ case_when(
+        . == "blue" ~ 1,
+        . == "red"  ~ 2,
+        TRUE ~ NA_real_
+      )
+    )
+  ) %>%
   rowwise() %>%
-  mutate(sample_number = sum(!is.na(c_across(starts_with("proba_"))))) %>%
-  ungroup() %>% # <-- PIPE ADDED HERE!
-  mutate(feedback = ifelse(CorrectResponse == 1, 1, 0)) # 1=Blue correct, 0=Red correct
+  mutate(
+    sample_number = sum(!is.na(c_across(starts_with("proba_"))))
+  ) %>%
+  ungroup() %>%
+  ##mutate(
+  ## feedback = ifelse(CorrectResponse == 1, 1, 0)
+  ## )
 
+mutate(
+  ## CorrectResponse is button-coded, so it must also
+  ## be converted into the objectively correct colour.
+  feedback = case_when(
+   ResponseButtonOrder == 1 & CorrectResponse == 1 ~ 1L, # Blue
+   ResponseButtonOrder == 1 & CorrectResponse == 0 ~ 0L, # Red
+   ResponseButtonOrder == 0 & CorrectResponse == 0 ~ 1L, # Blue
+   ResponseButtonOrder == 0 & CorrectResponse == 1 ~ 0L, # Red
+    TRUE ~ NA_integer_
+  )
+)
+##################################################
+## CHECK BASIC DATA STRUCTURE
+##################################################
 
-N = length(unique(data$ParticipantPrivateID))
-T_max = max(data$TrialNumber)
-I_max <- max(data$sample_number) ## max number of samples/trial
-## compute trials by subject
+N <- length(unique(data$ParticipantPrivateID))
+T_max <- max(data$TrialNumber)
+I_max <- max(data$sample_number)
+
 d <- data %>%
-    group_by(ParticipantPrivateID) %>%
-    summarise(t_subjs = n())
+  group_by(ParticipantPrivateID) %>%
+  summarise(t_subjs = n(), .groups = "drop")
+
 t_subjs <- d$t_subjs
 subjs <- unique(data$ParticipantPrivateID)
 
+cat("N subjects:", N, "\n")
+cat("T max:", T_max, "\n")
+cat("I max:", I_max, "\n")
+cat("Total rows:", nrow(data), "\n")
+
+##################################################
+## INITIALISE ARRAYS FOR STAN
+##################################################
+
+choice   <- array(-1, c(N, T_max))
+color    <- array(-1, c(N, T_max, I_max))
+proba    <- array(-1, c(N, T_max, I_max))
+sample   <- array(-1, c(N, T_max))
+feedback <- array(0,  c(N, T_max))
+
+##################################################
+## FILL ARRAYS
+##################################################
+
+for (n in 1:N) {
+  
+  t <- t_subjs[n]
+  
+  data_subj <- data %>%
+    filter(ParticipantPrivateID == subjs[n]) %>%
+    arrange(TrialNumber)
+  
+  choice[n, 1:t] <- data_subj$choice
+  feedback[n, 1:t] <- data_subj$feedback
+  
+  for (k in 1:t) {
     
-## Initialize data arrays
-choice  <- array(-1, c(N, T_max))
-color <- array( -1, c(N, T_max, I_max))
-proba <- array(-1, c(N, T_max, I_max))
-sample <- array(-1, c(N, T_max))
-# NEW: Initialize the feedback array
-feedback <- array(0, c(N, T_max))
-## fill the  arrays
-for (n in 1:N) { ## loop through subjects
-  t <- t_subjs[n] ## number of trials for subj i
-  data_subj <- data %>% filter(ParticipantPrivateID == subjs[n])
-  choice[n, 1:t] <- data_subj$choice 
-  #NEW: Populate the feedback array.
-  feedback[n, 1:t] <- data_subj$feedback[1:t]
-  for (k in 1:t) { ## loop through trials
-      data_subj_t <- data_subj[k,]
-      sample[n,k] <- data_subj_t$sample_number
-      for (i in 1:data_subj_t$sample_number) {
-          color_var <- paste0("color_", i)
-          proba_var <- paste0("proba_", i)
-          color[n, k, i] <- data_subj[[color_var]][k]
-          proba[n, k, i] <- data_subj[[proba_var]][k]/100
-      }
+    data_subj_t <- data_subj[k, ]
+    
+    sample[n, k] <- data_subj_t$sample_number
+    
+    for (i in 1:data_subj_t$sample_number) {
+      
+      color_var <- paste0("color_", i)
+      proba_var <- paste0("proba_", i)
+      
+      color[n, k, i] <- data_subj[[color_var]][k]
+      proba[n, k, i] <- data_subj[[proba_var]][k] / 100
+    }
   }
 }
 
+##################################################
+## CREATE DATA LIST FOR STAN
+##################################################
 
 data_list <- list(
-    N = N,
-    T_max = T_max,
-    I_max = I_max,
-    Tsubj = t_subjs,
-    color = color,
-    proba = proba,
-    choice = choice,
-    sample = sample,
-    # NEW: Add the feedback array to the list
-    feedback = feedback
+  N = N,
+  T_max = T_max,
+  I_max = I_max,
+  Tsubj = t_subjs,
+  color = color,
+  proba = proba,
+  choice = choice,
+  sample = sample,
+  feedback = feedback,
+  grainsize = 5
 )
 
-
-
-##save(data_list, file = './data/data_list_8.rdata')
-
-#####################################################
-##  FIT THE MODEL
-####################################################
+##################################################
+## FIT THE MODEL
+##################################################
 
 setwd("/Users/bty615/Documents/GitHub/reliable_info_bias/stan")
-data_list$grainsize = 5 ## specify grainsize for within chain parallelization
 
-## Compile the model
 model <- cmdstan_model(
-  stan_file = './log_trunc_simplified_model.stan', 
-    force_recompile = TRUE, ## necessary if you change the mode
-    cpp_options = list(stan_opencl = FALSE, stan_threads = TRUE), ## within chain parallel
-    stanc_options = list("O1"), ## fastest sampling
-    compile_model_methods = TRUE ## necessary for loo moment matching
+  stan_file = "./log_trunc_simplified_boost_learning.stan",
+  force_recompile = TRUE,
+  cpp_options = list(
+    stan_opencl = FALSE,
+    stan_threads = TRUE
+  ),
+  stanc_options = list("O1"),
+  compile_model_methods = TRUE
 )
 
-
-## Sampling
 fit <- model$sample(
   data = data_list,
-  ##seed = 1234,
   seed = 4321,
-  ##init = list(inits_chain,inits_chain, inits_chain,inits_chain),
   chains = 4,
   parallel_chains = 4,
   threads_per_chain = 5,
   iter_warmup = 2000,
   iter_sampling = 1000,
   max_treedepth = 12,
-  adapt_delta = .9,
+  adapt_delta = 0.9,
   save_warmup = FALSE
 )
 
+##################################################
+## COMPUTE LOO
+##################################################
 
-## Compute LOO
-loo <- fit$loo(cores = 10, moment_match = TRUE)
+loo_result <- fit$loo(
+  cores = 10,
+  moment_match = TRUE
+)
 
-# Save results
-dir.create('./results/fits/exp12/', recursive = TRUE, showWarnings = FALSE)
-save(fit, file = './results/fits/exp12/fit_trunc_simplified_model_aware_exp12.rdata')
+print(loo_result)
 
-save(loo, file = './results/loo/loo_trunc_simplified_model_aware_exp12.rdata')
+##################################################
+## SAVE RESULTS
+##################################################
+
+dir.create("./results/fits/exp11_unaware/", recursive = TRUE, showWarnings = FALSE)
+dir.create("./results/loo/exp11_unaware/", recursive = TRUE, showWarnings = FALSE)
+
+save(
+  fit,
+  file = "./results/fits/exp11_unaware/fit_trunc_boost_unaware_exp11.rdata"
+)
+
+save(
+  loo_result,
+  file = "./results/loo/exp11_unaware/loo_trunc_boost_unaware_exp11.rdata"
+)
+
+cat("\nSaved fit to:\n")
+cat("./results/fits/exp11_unaware/fit_trunc_boost_unaware_exp11.rdata\n")
+
+cat("\nSaved LOO to:\n")
+cat("./results/loo/exp11_unaware/loo_trunc_boost_unaware_exp11.rdata\n")
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -1477,6 +1576,204 @@ ggplot(df_all, aes(x = value, fill = group)) +
 
 
 
+library(dplyr)
+library(tidyr)
+
+# ---------------------------------------------------------------
+# 7. Posterior summaries against optimal values
+# ---------------------------------------------------------------
+ref_values <- c(mu_delta = 1, mu_eta = 0)
+
+posterior_vs_optimal <- df_plot %>%
+  group_by(group, param) %>%
+  summarise(
+    ref = ref_values[as.character(first(param))],
+    mean = mean(value),
+    median = median(value),
+    l95 = quantile(value, 0.025),
+    u95 = quantile(value, 0.975),
+    p_above_ref = mean(value > ref),
+    p_below_ref = mean(value < ref),
+    mean_diff = mean(value - ref),
+    median_diff = median(value - ref),
+    l95_diff = quantile(value - ref, 0.025),
+    u95_diff = quantile(value - ref, 0.975),
+    .groups = "drop"
+  )
+
+print(posterior_vs_optimal)
+
+
+
+
+
+library(tidyverse)
+library(posterior)
+library(ggplot2)
+
+# -------------------------------------------------------------------
+# 1. Load fits
+# -------------------------------------------------------------------
+load("/Users/bty615/Documents/GitHub/reliable_info_bias/results/fits/Exp12/fit_trunc_boost_model_aware_exp12.rdata")
+fit_explicit <- fit
+
+load("/Users/bty615/Documents/GitHub/reliable_info_bias/results/fits/Exp12/fit_trunc_boost_model_aware_exp11.rdata")
+fit_aware <- fit
+
+load("/Users/bty615/Documents/GitHub/reliable_info_bias/results/fits/Exp12/fit_trunc_boost_model_unaware_exp11.rdata")
+fit_unaware <- fit
+
+# -------------------------------------------------------------------
+# 2. Extraction function: keep only delta and eta
+# -------------------------------------------------------------------
+extract_delta_eta <- function(fit, label) {
+  d <- as_draws_df(fit$draws())
+  
+  if (all(c("mu_delta", "mu_eta") %in% colnames(d))) {
+    out <- d %>%
+      select(mu_delta, mu_eta)
+  } else {
+    mu_cols <- colnames(d)[grepl("^mu_pr(\\.|\\[)", colnames(d))]
+    if (length(mu_cols) < 5) {
+      stop("Could not find enough mu_pr columns to extract mu_delta and mu_eta.")
+    }
+    
+    out <- d %>%
+      select(all_of(mu_cols[c(4, 5)]))
+    
+    colnames(out) <- c("mu_delta", "mu_eta")
+    
+    out <- out %>%
+      mutate(
+        mu_delta = pnorm(mu_delta) * 2.0
+      )
+  }
+  
+  out %>%
+    mutate(group = label) %>%
+    pivot_longer(
+      cols = c(mu_delta, mu_eta),
+      names_to = "param",
+      values_to = "value"
+    )
+}
+
+# -------------------------------------------------------------------
+# 3. Prepare data
+# -------------------------------------------------------------------
+df_plot <- bind_rows(
+  extract_delta_eta(fit_unaware,  "Implicit Unaware"),
+  extract_delta_eta(fit_aware,    "Implicit Aware"),
+  extract_delta_eta(fit_explicit, "Explicit Aware")
+)
+
+df_plot$group <- factor(
+  df_plot$group,
+  levels = c("Implicit Aware", "Explicit Aware", "Implicit Unaware")
+)
+
+df_plot$param <- factor(
+  df_plot$param,
+  levels = c("mu_delta", "mu_eta")
+)
+
+# -------------------------------------------------------------------
+# 4. Colours
+# -------------------------------------------------------------------
+custom_colors <- c(
+  "Explicit Aware"   = "#E69F00",
+  "Implicit Aware"   = "#1B5E20",
+  "Implicit Unaware" = "#A8D08D"
+)
+
+# -------------------------------------------------------------------
+# 5. Reference lines
+# -------------------------------------------------------------------
+ref_lines <- tibble(
+  param = c("mu_delta", "mu_eta"),
+  xint  = c(1, 0),
+  label = "Optimal Bayesian\nobserver"
+)
+
+panel_titles <- tibble(
+  param = c("mu_delta", "mu_eta"),
+  x = c(Inf, Inf),
+  y = c(Inf, Inf),
+  label = c("Delta", "Eta")
+)
+
+ggplot(df_plot, aes(x = value, fill = group)) +
+  geom_histogram(
+    position = "identity",
+    bins = 60,
+    alpha = 0.55,
+    color = "black",
+    linewidth = 0.1
+  ) +
+  geom_vline(
+    data = ref_lines,
+    aes(xintercept = xint),
+    color = "red",
+    linewidth = 1,
+    inherit.aes = FALSE
+  ) +
+  geom_text(
+    data = ref_lines,
+    aes(x = xint, y = 0, label = label),
+    color = "red",
+    vjust = 2.8,
+    hjust = 0.5,
+    size = 4,
+    inherit.aes = FALSE
+  ) +
+  geom_text(
+    data = panel_titles,
+    aes(x = x, y = y, label = label),
+    hjust = 1.1,
+    vjust = 1.5,
+    size = 5,
+    fontface = "bold",
+    inherit.aes = FALSE
+  ) +
+  facet_wrap(
+    ~param,
+    scales = "free",
+    ncol = 1
+  ) +
+  scale_fill_manual(values = custom_colors) +
+  scale_y_continuous(name = "Frequency") +
+  coord_cartesian(clip = "off") +
+  labs(
+    x = "Parameter value"
+  ) +
+  theme_bw(base_size = 14) +
+  theme(
+    strip.background = element_blank(),
+    strip.text = element_blank(),
+    
+    legend.position = "inside",
+    legend.position.inside = c(0.05, 0.18),
+    legend.justification = c(0, 0),
+    legend.background = element_rect(fill = scales::alpha("white", 0.75), color = NA),
+    
+    plot.margin = margin(10, 10, 20, 10),
+    
+    axis.title = element_text(size = 20),
+    axis.text  = element_text(size = 14)
+  )
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -1488,13 +1785,13 @@ library(ggplot2)
 # 1. Load fits 
 # -------------------------------------------------------------------
 # Ensure these files contain the 5-parameter (alpha, beta, lambda, delta, eta) model
-load("/Users/bty615/Documents/GitHub/reliable_info_bias/results/fits/Exp12/fit_trunc_simplified_boost_aware_exp12.rdata")
+load("/Users/bty615/Documents/GitHub/reliable_info_bias/results/fits/Exp12/fit_trunc_boost_model_aware_exp12.rdata")
 fit_explicit <- fit
 
-load("/Users/bty615/Documents/GitHub/reliable_info_bias/results/fits/Exp12/fit_trunc_simplified_boost_aware_exp11.rdata")
+load("/Users/bty615/Documents/GitHub/reliable_info_bias/results/fits/Exp12/fit_trunc_boost_model_aware_exp11.rdata")
 fit_aware <- fit
 
-load("/Users/bty615/Documents/GitHub/reliable_info_bias/results/fits/Exp12/fit_trunc_simplified_boost_unaware_exp11.rdata")
+load("/Users/bty615/Documents/GitHub/reliable_info_bias/results/fits/Exp12/fit_trunc_boost_model_unaware_exp11.rdata")
 fit_unaware <- fit
 
 # -------------------------------------------------------------------
@@ -2176,816 +2473,885 @@ print(results_df, n = Inf)
 
 
 
-
-
-
 # ===============================================================
-# LOO comparisons for:
-#   - Exp11 UNAWARE
-#   - Exp11 AWARE
-#   - Exp12 AWARE
-# Comparing: simple vs learn vs boost
+# FULL SCRIPT: Posterior Distributions + Bayesian Exceedance
+# 4-PARAM MODEL: alpha, beta, lambda, eta
+# DELTA REMOVED
 # ===============================================================
 
-library(loo)
+# -------------------------------------------------------------------
+# 0. Load libraries
+# -------------------------------------------------------------------
+library(tidyverse)
+library(posterior)
+library(ggplot2)
 
-load_loo <- function(path) {
-  if (!file.exists(path)) stop("File not found: ", path)
-  e <- new.env()
-  load(path, envir = e)
-  if (!exists("loo", envir = e)) stop("No object named `loo` found in: ", path)
-  e$loo
-}
+# -------------------------------------------------------------------
+# 1. Load new fits
+# -------------------------------------------------------------------
+load("/Users/bty615/Documents/GitHub/reliable_info_bias/results/fits/Exp12/fit_trunc_eta_model_unaware_exp11.rdata")
+fit_unaware <- fit
 
-run_group <- function(label, simple_path, learn_path, boost_path) {
+load("/Users/bty615/Documents/GitHub/reliable_info_bias/results/fits/Exp12/fit_trunc_eta_model_aware_exp11.rdata")
+fit_aware <- fit
+
+load("/Users/bty615/Documents/GitHub/reliable_info_bias/results/fits/Exp12/fit_trunc_eta_model_aware_exp12.rdata")
+fit_explicit <- fit
+
+# -------------------------------------------------------------------
+# 2. Function: Extract transformed mu_ parameters for plotting
+# -------------------------------------------------------------------
+extract_mu <- function(fit, label) {
+  d <- as_draws_df(fit$draws())
   
-  loo_simple <- load_loo(simple_path)
-  loo_learn  <- load_loo(learn_path)
-  loo_boost  <- load_loo(boost_path)
+  keep_params <- c("mu_alpha", "mu_beta", "mu_lambda", "mu_eta")
+  keep_params <- keep_params[keep_params %in% colnames(d)]
   
-  cat("\n====================================================\n")
-  cat(label, "\n")
-  cat("====================================================\n")
-  
-  Ns <- c(
-    simple = length(loo_simple$pointwise[, "elpd_loo"]),
-    learn  = length(loo_learn$pointwise[, "elpd_loo"]),
-    boost  = length(loo_boost$pointwise[, "elpd_loo"])
-  )
-  cat("\nN observations used (should match):\n")
-  print(Ns)
-  if (length(unique(Ns)) != 1) warning(label, ": N differs across models — not comparable!")
-  
-  cat("\nPareto-k table — SIMPLE:\n"); print(pareto_k_table(loo_simple))
-  cat("\nPareto-k table — LEARN:\n");  print(pareto_k_table(loo_learn))
-  cat("\nPareto-k table — BOOST:\n");  print(pareto_k_table(loo_boost))
-  
-  comp <- loo_compare(list(simple = loo_simple, learn = loo_learn, boost = loo_boost))
-  cat("\nLOO comparison (higher elpd_loo is better):\n")
-  print(comp, digits = 2, simplify = FALSE)
-  
-  invisible(list(simple = loo_simple, learn = loo_learn, boost = loo_boost, comp = comp))
-}
-
-# ----------------------------
-# Your intentional mapping kept exactly
-# ----------------------------
-
-res_exp11_unaware <- run_group(
-  label       = "Exp11 — UNAWARE",
-  simple_path = "./results/loo/loo_trunc_simplified_model_unaware_exp11.rdata",
-  learn_path  = "./results/loo/loo_trunc_simplified_learning_unaware_exp11.rdata",
-  boost_path  = "./results/loo/loo_trunc_simplified_boost_unaware_exp11.rdata"
-)
-
-res_exp11_aware <- run_group(
-  label       = "Exp11 — AWARE",
-  simple_path = "./results/loo/loo_trunc_simplified_model_aware_exp11.rdata",
-  learn_path  = "./results/loo/loo_trunc_simplified_learning_aware_exp11.rdata",
-  boost_path  = "./results/loo/loo_trunc_simplified_boost_aware_exp11.rdata"
-)
-
-res_exp12_aware <- run_group(
-  label       = "Exp12 — AWARE",
-  simple_path = "./results/loo/loo_trunc_simplified_model_aware_exp12.rdata",
-  learn_path  = "./results/loo/loo_trunc_simplified_learning_aware_exp12.rdata",
-  boost_path  = "./results/loo/loo_trunc_simplified_boost_aware_exp12.rdata"
-)
-
-# Quick access
-comp_exp11_unaware <- res_exp11_unaware$comp
-comp_exp11_aware   <- res_exp11_aware$comp
-comp_exp12_aware   <- res_exp12_aware$comp
-
-
-
-
-
-
-
-# ===============================================================
-# Full script: PSIS-LOO comparisons + BAR CHARTS (base R)
-# Groups:
-#   - Exp11 UNAWARE
-#   - Exp11 AWARE
-#   - Exp12 AWARE
-# Models (your intentional mapping preserved):
-#   simple_path = ...model...
-#   learn_path  = ...learning...
-#   boost_path  = ...boost...
-# ===============================================================
-
-rm(list = ls(all = TRUE))
-library(loo)
-
-# ----------------------------
-# Helper: safely load `loo` from an .rdata file
-# ----------------------------
-load_loo <- function(path) {
-  if (!file.exists(path)) stop("File not found: ", path)
-  e <- new.env()
-  load(path, envir = e)
-  if (!exists("loo", envir = e)) stop("No object named `loo` found in: ", path)
-  e$loo
-}
-
-# ----------------------------
-# Helper: run diagnostics + comparison
-# ----------------------------
-run_group <- function(label, simple_path, learn_path, boost_path) {
-  
-  loo_simple <- load_loo(simple_path)
-  loo_learn  <- load_loo(learn_path)
-  loo_boost  <- load_loo(boost_path)
-  
-  cat("\n====================================================\n")
-  cat(label, "\n")
-  cat("====================================================\n")
-  
-  # Alignment check: same number of observations?
-  Ns <- c(
-    simple = length(loo_simple$pointwise[, "elpd_loo"]),
-    learn  = length(loo_learn$pointwise[, "elpd_loo"]),
-    boost  = length(loo_boost$pointwise[, "elpd_loo"])
-  )
-  cat("\nN observations used (should match):\n")
-  print(Ns)
-  if (length(unique(Ns)) != 1) warning(label, ": N differs across models — not comparable!")
-  
-  # Pareto-k diagnostics
-  cat("\nPareto-k table — SIMPLE:\n"); print(pareto_k_table(loo_simple))
-  cat("\nPareto-k table — LEARN:\n");  print(pareto_k_table(loo_learn))
-  cat("\nPareto-k table — BOOST:\n");  print(pareto_k_table(loo_boost))
-  
-  # LOO compare (named properly)
-  comp <- loo_compare(list(simple = loo_simple, learn = loo_learn, boost = loo_boost))
-  cat("\nLOO comparison (higher elpd_loo is better):\n")
-  print(comp, digits = 2, simplify = FALSE)
-  
-  invisible(list(simple = loo_simple, learn = loo_learn, boost = loo_boost, comp = comp))
-}
-
-# ----------------------------
-# BAR CHART helpers (base R)
-# ----------------------------
-bar_loo_diff <- function(comp, main = "") {
-  d <- as.data.frame(comp)
-  models <- rownames(d)
-  
-  # Order so best (0) is first/top
-  ord <- order(d$elpd_diff, decreasing = TRUE)
-  d <- d[ord, , drop = FALSE]
-  models <- models[ord]
-  
-  y <- d$elpd_diff
-  se <- d$se_diff
-  
-  mids <- barplot(y,
-                  names.arg = models,
-                  horiz = TRUE,
-                  las = 1,
-                  xlab = "Δelpd (vs best; higher is better)",
-                  main = main)
-  
-  segments(y - se, mids, y + se, mids, lwd = 2)
-  abline(v = 0, lty = 2, col = "gray40")
-}
-
-bar_loo_elpd <- function(comp, main = "") {
-  d <- as.data.frame(comp)
-  models <- rownames(d)
-  
-  # Order by absolute elpd_loo (higher is better)
-  ord <- order(d$elpd_loo, decreasing = TRUE)
-  d <- d[ord, , drop = FALSE]
-  models <- models[ord]
-  
-  y <- d$elpd_loo
-  se <- d$se_elpd_loo
-  
-  mids <- barplot(y,
-                  names.arg = models,
-                  horiz = TRUE,
-                  las = 1,
-                  xlab = "elpd_loo (higher is better)",
-                  main = main)
-  
-  segments(y - se, mids, y + se, mids, lwd = 2)
-}
-
-# ===============================================================
-# Run all 3 groups (YOUR intentional mapping kept)
-# ===============================================================
-
-res_exp11_unaware <- run_group(
-  label       = "Exp11 — UNAWARE",
-  simple_path = "./results/loo/loo_trunc_simplified_model_unaware_exp11.rdata",
-  learn_path  = "./results/loo/loo_trunc_simplified_learning_unaware_exp11.rdata",
-  boost_path  = "./results/loo/loo_trunc_simplified_boost_unaware_exp11.rdata"
-)
-
-res_exp11_aware <- run_group(
-  label       = "Exp11 — AWARE",
-  simple_path = "./results/loo/loo_trunc_simplified_model_aware_exp11.rdata",
-  learn_path  = "./results/loo/loo_trunc_simplified_learning_aware_exp11.rdata",
-  boost_path  = "./results/loo/loo_trunc_simplified_boost_aware_exp11.rdata"
-)
-
-res_exp12_aware <- run_group(
-  label       = "Exp12 — AWARE",
-  simple_path = "./results/loo/loo_trunc_simplified_model_aware_exp12.rdata",
-  learn_path  = "./results/loo/loo_trunc_simplified_learning_aware_exp12.rdata",
-  boost_path  = "./results/loo/loo_trunc_simplified_boost_aware_exp12.rdata"
-)
-
-# Quick access to compare tables
-comp_exp11_unaware <- res_exp11_unaware$comp
-comp_exp11_aware   <- res_exp11_aware$comp
-comp_exp12_aware   <- res_exp12_aware$comp
-
-# ===============================================================
-# PLOTS
-#   1) Δelpd bar charts (recommended)
-#   2) Absolute elpd_loo bar charts (optional)
-# ===============================================================
-
-# ---- 1) Δelpd (vs best) ----
-par(mfrow = c(1,3), mar = c(4,8,3,1))
-bar_loo_diff(comp_exp11_unaware, "Exp11 — Unaware (Δelpd)")
-bar_loo_diff(comp_exp11_aware,   "Exp11 — Aware (Δelpd)")
-bar_loo_diff(comp_exp12_aware,   "Exp12 — Aware (Δelpd)")
-par(mfrow = c(1,1))
-
-# ---- 2) Absolute elpd_loo (optional) ----
-par(mfrow = c(1,3), mar = c(4,8,3,1))
-bar_loo_elpd(comp_exp11_unaware, "Exp11 — Unaware (elpd_loo)")
-bar_loo_elpd(comp_exp11_aware,   "Exp11 — Aware (elpd_loo)")
-bar_loo_elpd(comp_exp12_aware,   "Exp12 — Aware (elpd_loo)")
-par(mfrow = c(1,1))
-
-
-
-
-
-
-
-
-# ===============================================================
-# LOO comparisons for:
-#   - Exp11 UNAWARE
-#   - Exp11 AWARE
-#   - Exp12 AWARE
-# Comparing: simple vs learn vs boost
-# PLUS: pairwise deltas for slide narration:
-#   learn vs simple  (δ-only extension)
-#   boost vs learn   (η added on top of δ)
-#   boost vs simple  (full model vs baseline)
-# ===============================================================
-
-rm(list=ls(all=TRUE))
-library(loo)
-
-load_loo <- function(path) {
-  if (!file.exists(path)) stop("File not found: ", path)
-  e <- new.env()
-  load(path, envir = e)
-  if (!exists("loo", envir = e)) stop("No object named `loo` found in: ", path)
-  e$loo
-}
-
-run_group <- function(label, simple_path, learn_path, boost_path) {
-  
-  loo_simple <- load_loo(simple_path)
-  loo_learn  <- load_loo(learn_path)
-  loo_boost  <- load_loo(boost_path)
-  
-  cat("\n====================================================\n")
-  cat(label, "\n")
-  cat("====================================================\n")
-  
-  Ns <- c(
-    simple = nrow(loo_simple$pointwise),
-    learn  = nrow(loo_learn$pointwise),
-    boost  = nrow(loo_boost$pointwise)
-  )
-  cat("\nN observations used (must match):\n")
-  print(Ns)
-  if (length(unique(Ns)) != 1) warning(label, ": N differs across models — not comparable!")
-  
-  cat("\nPareto-k table — SIMPLE:\n"); print(pareto_k_table(loo_simple))
-  cat("\nPareto-k table — LEARN:\n");  print(pareto_k_table(loo_learn))
-  cat("\nPareto-k table — BOOST:\n");  print(pareto_k_table(loo_boost))
-  
-  comp <- loo_compare(list(simple = loo_simple, learn = loo_learn, boost = loo_boost))
-  cat("\nLOO comparison (ΔELPD vs best; best has 0):\n")
-  print(comp, digits = 2, simplify = FALSE)
-  
-  # ----------------------------
-  # Pairwise comparisons for narration
-  # ----------------------------
-  pair_ls <- loo_compare(list(learn = loo_learn, simple = loo_simple))  # learn vs simple
-  pair_bl <- loo_compare(list(boost = loo_boost, learn  = loo_learn))   # boost vs learn
-  pair_bs <- loo_compare(list(boost = loo_boost, simple = loo_simple))  # boost vs simple  <-- NEW
-  
-  d_ls <- as.data.frame(pair_ls)
-  d_bl <- as.data.frame(pair_bl)
-  d_bs <- as.data.frame(pair_bs)
-  
-  # Signed ΔELPDs from point estimates
-  elpd_simple <- loo_simple$estimates["elpd_loo","Estimate"]
-  elpd_learn  <- loo_learn$estimates["elpd_loo","Estimate"]
-  elpd_boost  <- loo_boost$estimates["elpd_loo","Estimate"]
-  
-  delta_learn_simple <- elpd_learn - elpd_simple
-  delta_boost_learn  <- elpd_boost - elpd_learn
-  delta_boost_simple <- elpd_boost - elpd_simple  # <-- NEW
-  
-  # SE magnitudes for pairwise differences:
-  # take se_diff from the non-best row in each 2-model compare
-  se_from_pair <- function(df) {
-    best <- rownames(df)[which.max(df$elpd_loo)]
-    abs(df$se_diff[rownames(df) != best])
+  if (length(keep_params) == 0) {
+    stop(paste("No matching mu_* parameters found in fit for group:", label))
   }
   
-  se_learn_simple <- se_from_pair(d_ls)
-  se_boost_learn  <- se_from_pair(d_bl)
-  se_boost_simple <- se_from_pair(d_bs)  # <-- NEW
+  mu_df <- d %>%
+    select(all_of(keep_params)) %>%
+    mutate(group = label) %>%
+    pivot_longer(
+      cols = all_of(keep_params),
+      names_to = "param",
+      values_to = "value"
+    )
   
-  # Slide sentence
-  cat("\nSLIDE SENTENCE:\n")
-  cat(sprintf(
-    paste0(
-      "%s: ΔELPD(learn−simple) = %.1f (SE≈%.1f). ",
-      "ΔELPD(boost−learn) = %.1f (SE≈%.1f). ",
-      "ΔELPD(boost−simple) = %.1f (SE≈%.1f).\n"
-    ),
-    label,
-    delta_learn_simple, se_learn_simple,
-    delta_boost_learn,  se_boost_learn,
-    delta_boost_simple, se_boost_simple
-  ))
-  
-  invisible(list(
-    simple = loo_simple, learn = loo_learn, boost = loo_boost,
-    comp = comp,
-    deltas = c(learn_minus_simple = delta_learn_simple,
-               boost_minus_learn  = delta_boost_learn,
-               boost_minus_simple = delta_boost_simple),
-    se = c(se_learn_simple = se_learn_simple,
-           se_boost_learn  = se_boost_learn,
-           se_boost_simple = se_boost_simple)
-  ))
+  return(mu_df)
 }
 
-# ----------------------------
-# Your intentional mapping kept exactly
-# ----------------------------
+# -------------------------------------------------------------------
+# 3. Extract draws for plotting
+# -------------------------------------------------------------------
+df_unaware  <- extract_mu(fit_unaware,  "Implicit Unaware")
+df_aware    <- extract_mu(fit_aware,    "Implicit Aware")
+df_explicit <- extract_mu(fit_explicit, "Explicit Aware")
 
-res_exp11_unaware <- run_group(
-  label       = "Exp11 — UNAWARE",
-  simple_path = "./results/loo/loo_trunc_simplified_model_unaware_exp11.rdata",
-  learn_path  = "./results/loo/loo_trunc_simplified_learning_unaware_exp11.rdata",
-  boost_path  = "./results/loo/loo_trunc_simplified_boost_unaware_exp11.rdata"
+df_all <- bind_rows(df_unaware, df_aware, df_explicit)
+
+# Set factor order for plotting
+df_all$group <- factor(df_all$group, levels = c(
+  "Implicit Unaware",
+  "Implicit Aware",
+  "Explicit Aware"
+))
+
+# Set parameter order for plotting
+df_all$param <- factor(df_all$param, levels = c(
+  "mu_alpha",
+  "mu_beta",
+  "mu_lambda",
+  "mu_eta"
+))
+
+# -------------------------------------------------------------------
+# 4. Plot posterior distributions
+# -------------------------------------------------------------------
+param_labels <- c(
+  "mu_alpha"  = expression(mu[alpha]),
+  "mu_beta"   = expression(mu[beta]),
+  "mu_lambda" = expression(mu[lambda]),
+  "mu_eta"    = expression(mu[eta])
 )
 
-res_exp11_aware <- run_group(
-  label       = "Exp11 — AWARE",
-  simple_path = "./results/loo/loo_trunc_simplified_model_aware_exp11.rdata",
-  learn_path  = "./results/loo/loo_trunc_simplified_learning_aware_exp11.rdata",
-  boost_path  = "./results/loo/loo_trunc_simplified_boost_aware_exp11.rdata"
+custom_colors <- c(
+  "Explicit Aware"   = "#E69F00",
+  "Implicit Aware"   = "#1B5E20",
+  "Implicit Unaware" = "#A8D08D"
 )
 
-res_exp12_aware <- run_group(
-  label       = "Exp12 — AWARE",
-  simple_path = "./results/loo/loo_trunc_simplified_model_aware_exp12.rdata",
-  learn_path  = "./results/loo/loo_trunc_simplified_learning_aware_exp12.rdata",
-  boost_path  = "./results/loo/loo_trunc_simplified_boost_aware_exp12.rdata"
-)
+ggplot(df_all, aes(x = value, fill = group)) +
+  geom_histogram(
+    position = "identity",
+    bins = 60,
+    alpha = 0.55,
+    color = "black",
+    linewidth = 0.1
+  ) +
+  facet_wrap(
+    ~param,
+    scales = "free",
+    ncol = 2,
+    labeller = as_labeller(param_labels, default = label_parsed)
+  ) +
+  scale_fill_manual(values = custom_colors) +
+  theme_bw(base_size = 14) +
+  theme(
+    legend.position = "bottom",
+    strip.background = element_blank(),
+    strip.text = element_text(face = "bold")
+  ) +
+  labs(
+    title = "Posterior Parameter Distributions (4-Param Model: Delta set to 1)",
+    x = "Parameter Value",
+    y = "Frequency",
+    fill = "Group"
+  )
 
-rm(list = ls(all = TRUE))
-
-rm(list = ls(all = TRUE))
-library(loo)
-
-# ---- load .rdata that contains an object named `loo`
-load_loo <- function(path) {
-  if (!file.exists(path)) stop("File not found: ", path)
-  e <- new.env()
-  load(path, envir = e)
-  if (!exists("loo", envir = e)) stop("No object named `loo` found in: ", path)
-  e$loo
+# -------------------------------------------------------------------
+# 5. Function: Extract group-level posterior draws
+# -------------------------------------------------------------------
+extract_mu_draws <- function(fit, label = NULL) {
+  d <- as_draws_df(fit$draws())
+  
+  keep_params <- c("mu_alpha", "mu_beta", "mu_lambda", "mu_eta")
+  keep_params <- keep_params[keep_params %in% colnames(d)]
+  
+  if (length(keep_params) == 0) {
+    stop(paste("No matching mu_* parameters found in fit:", label))
+  }
+  
+  d %>% select(all_of(keep_params))
 }
 
-# ---- compute signed ΔELPD and its SE for A - B
-delta_elpd <- function(loo_A, loo_B) {
-  comp <- loo_compare(list(A = loo_A, B = loo_B))
-  df <- as.data.frame(comp)
-  
-  elpd_A <- loo_A$estimates["elpd_loo", "Estimate"]
-  elpd_B <- loo_B$estimates["elpd_loo", "Estimate"]
-  delta  <- elpd_A - elpd_B
-  
-  best <- rownames(df)[which.max(df$elpd_loo)]
-  se   <- abs(df$se_diff[rownames(df) != best])
-  
-  c(delta = as.numeric(delta), se = as.numeric(se))
-}
+draws_unaware  <- extract_mu_draws(fit_unaware,  "Implicit Unaware")
+draws_aware    <- extract_mu_draws(fit_aware,    "Implicit Aware")
+draws_explicit <- extract_mu_draws(fit_explicit, "Explicit Aware")
 
-# ---- build contrasts for one group from file paths
-group_contrasts <- function(simple_path, learn_path, boost_path) {
-  loo_simple <- load_loo(simple_path)
-  loo_learn  <- load_loo(learn_path)
-  loo_boost  <- load_loo(boost_path)
+# -------------------------------------------------------------------
+# 6. Identify common parameters across all models
+# -------------------------------------------------------------------
+mu_names <- Reduce(intersect, list(
+  colnames(draws_explicit),
+  colnames(draws_aware),
+  colnames(draws_unaware)
+))
+
+cat("Parameters used for Bayesian comparisons:\n")
+print(mu_names)
+
+# -------------------------------------------------------------------
+# 7. Bayesian exceedance probability function
+# -------------------------------------------------------------------
+calculate_exceedance <- function(draws_X, draws_Y, param_name) {
+  diff <- draws_X[[param_name]] - draws_Y[[param_name]]
   
-  Ns <- c(simple = nrow(loo_simple$pointwise),
-          learn  = nrow(loo_learn$pointwise),
-          boost  = nrow(loo_boost$pointwise))
-  if (length(unique(Ns)) != 1) warning("Nobs differs across models: ", paste(Ns, collapse = ", "))
+  exceedP_XY <- mean(diff > 0)          # Posterior probability Group1 > Group2
+  mean_diff  <- mean(diff)              # Posterior mean difference
   
-  ls <- delta_elpd(loo_learn, loo_simple)  # learn - simple  (δ only)
-  bs <- delta_elpd(loo_boost, loo_simple)  # boost - simple  (δ + η)
-  bl <- delta_elpd(loo_boost, loo_learn)   # boost - learn   (η on top)
+  # Smaller tail probability in direction opposite the observed mean difference
+  SE <- if (mean_diff > 0) {
+    mean(diff < 0)
+  } else {
+    mean(diff > 0)
+  }
   
   list(
-    deltas = c(ls["delta"], bs["delta"], bl["delta"]),
-    ses    = c(ls["se"],    bs["se"],    bl["se"]),
-    Ns = Ns
+    ExceedP_XY = exceedP_XY,
+    SE_value = SE,
+    Mean_Diff = mean_diff
   )
 }
 
-# ---- plot one panel (group-colored bars)
-plot_panel <- function(title, deltas, ses, ylim, bar_col) {
-  
-  labels <- c("learn − simple\n(δ only)",
-              "boost − simple\n(δ + η)",
-              "boost − learn\n(η on top)")
-  
-  mids <- barplot(
-    deltas,
-    names.arg = labels,
-    las = 2,
-    ylab = expression(Delta*ELPD),
-    main = title,
-    ylim = ylim,
-    border = NA,
-    col = bar_col
-  )
-  
-  arrows(mids, deltas - ses, mids, deltas + ses,
-         angle = 90, code = 3, length = 0.05, lwd = 2)
-  
-  abline(h = 0, lty = 2, col = "gray40", lwd = 1.5)
-}
-
-# ===============================================================
-# Group colours (your palette)
-# ===============================================================
-col_implicit_unaware <- rgb(0.56, 0.93, 0.56)
-col_implicit_aware   <- rgb(0.00, 0.50, 0.00)
-col_explicit_aware   <- rgb(1.00, 0.65, 0.00)
-
-# ===============================================================
-# Paths + titles (renamed to awareness labels)
-# ===============================================================
-paths <- list(
-  implicit_unaware = list(
-    title  = "Implicit Unaware",
-    color  = col_implicit_unaware,
-    simple = "./results/loo/loo_trunc_simplified_model_unaware_exp11.rdata",
-    learn  = "./results/loo/loo_trunc_simplified_learning_unaware_exp11.rdata",
-    boost  = "./results/loo/loo_trunc_simplified_boost_unaware_exp11.rdata"
-  ),
-  implicit_aware = list(
-    title  = "Implicit Aware",
-    color  = col_implicit_aware,
-    simple = "./results/loo/loo_trunc_simplified_model_aware_exp11.rdata",
-    learn  = "./results/loo/loo_trunc_simplified_learning_aware_exp11.rdata",
-    boost  = "./results/loo/loo_trunc_simplified_boost_aware_exp11.rdata"
-  ),
-  explicit_aware = list(
-    title  = "Explicit Aware",
-    color  = col_explicit_aware,
-    simple = "./results/loo/loo_trunc_simplified_model_aware_exp12.rdata",
-    learn  = "./results/loo/loo_trunc_simplified_learning_aware_exp12.rdata",
-    boost  = "./results/loo/loo_trunc_simplified_boost_aware_exp12.rdata"
-  )
+# -------------------------------------------------------------------
+# 8. Define ordered group comparisons
+# -------------------------------------------------------------------
+group_pairs <- list(
+  list("Explicit Aware",  draws_explicit, "Implicit Aware",   draws_aware),
+  list("Explicit Aware",  draws_explicit, "Implicit Unaware", draws_unaware),
+  list("Implicit Aware",  draws_aware,    "Implicit Unaware", draws_unaware)
 )
 
-# ===============================================================
-# Compute results + shared y-limits
-# ===============================================================
-res <- lapply(paths, \(p) group_contrasts(p$simple, p$learn, p$boost))
+# -------------------------------------------------------------------
+# 9. Run exceedance probability comparisons
+# -------------------------------------------------------------------
+results <- list()
+k <- 1
 
-all_vals <- unlist(lapply(res, \(r) c(r$deltas - r$ses, r$deltas + r$ses, 0)))
-ylim_shared <- range(all_vals) * 1.08
-
-# ===============================================================
-# Plot 3 panels
-# ===============================================================
-op <- par(mfrow = c(1, 3), mar = c(9, 5, 4, 1))
-on.exit(par(op), add = TRUE)
-
-plot_panel(paths$implicit_unaware$title, res$implicit_unaware$deltas, res$implicit_unaware$ses, ylim_shared, paths$implicit_unaware$color)
-plot_panel(paths$implicit_aware$title,   res$implicit_aware$deltas,   res$implicit_aware$ses,   ylim_shared, paths$implicit_aware$color)
-plot_panel(paths$explicit_aware$title,   res$explicit_aware$deltas,   res$explicit_aware$ses,   ylim_shared, paths$explicit_aware$color)
-
-# Optional: print extracted values
-cat("\n=== Pairwise ΔELPD ± SE extracted from loo objects ===\n")
-for (nm in names(res)) {
-  cat("\n", paths[[nm]]$title, "\n", sep = "")
-  print(data.frame(
-    contrast = c("learn-simple (δ only)", "boost-simple (δ+η)", "boost-learn (η on top)"),
-    delta = res[[nm]]$deltas,
-    se = res[[nm]]$ses
-  ), row.names = FALSE)
-}
-
-
-rm(list=ls(all=TRUE))
-library(loo)
-
-load_loo <- function(path){
-  e <- new.env(); load(path, envir=e)
-  if(!exists("loo", envir=e)) stop("No `loo` in ", path)
-  e$loo
-}
-
-plot_vs_best <- function(title, loo_simple, loo_learn, loo_boost, col, ylim=NULL){
-  
-  comp <- loo_compare(list(simple=loo_simple, learn=loo_learn, boost=loo_boost))
-  d <- as.data.frame(comp)
-  
-  # order by best to worst (best first)
-  d <- d[order(d$elpd_loo, decreasing=TRUE), , drop=FALSE]
-  
-  y  <- d$elpd_diff
-  se <- d$se_diff
-  labs <- rownames(d)
-  
-  if(is.null(ylim)){
-    ylim <- range(c(y-se, y+se, 0)) * 1.1
+for (p in mu_names) {
+  for (pair in group_pairs) {
+    group1 <- pair[[1]]
+    draws1 <- pair[[2]]
+    group2 <- pair[[3]]
+    draws2 <- pair[[4]]
+    
+    res <- calculate_exceedance(draws1, draws2, p)
+    
+    results[[k]] <- tibble(
+      Parameter = p,
+      Group1 = group1,
+      Group2 = group2,
+      Mean1 = mean(draws1[[p]]),
+      Mean2 = mean(draws2[[p]]),
+      Mean_Diff = res$Mean_Diff,
+      P_Exceed_G1_G2 = res$ExceedP_XY,
+      P_Exceed_Smaller = res$SE_value
+    )
+    
+    k <- k + 1
   }
-  
-  mids <- barplot(y, names.arg=labs, las=2, main=title,
-                  ylab=expression(Delta*ELPD~"(vs best)"),
-                  col=col, border=NA, ylim=ylim)
-  
-  arrows(mids, y-se, mids, y+se, angle=90, code=3, length=0.05, lwd=2)
-  abline(h=0, lty=2, col="gray40")
-  invisible(list(comp=comp, ylim=ylim))
 }
 
-# colours (your palette)
-col_unaware <- rgb(0.56,0.93,0.56)
-col_iaware  <- rgb(0.00,0.50,0.00)
-col_eaware  <- rgb(1.00,0.65,0.00)
+results_df <- bind_rows(results) %>%
+  mutate(
+    Significance = P_Exceed_Smaller < 0.05,
+    Comparison = paste(Group1, ">", Group2),
+    Parameter_Label = case_when(
+      Parameter == "mu_alpha"  ~ "mu_alpha",
+      Parameter == "mu_beta"   ~ "mu_beta",
+      Parameter == "mu_lambda" ~ "mu_lambda",
+      Parameter == "mu_eta"    ~ "mu_eta",
+      TRUE ~ Parameter
+    )
+  ) %>%
+  select(
+    Parameter,
+    Comparison,
+    Mean1,
+    Mean2,
+    Mean_Diff,
+    P_Exceed_G1_G2,
+    P_Exceed_Smaller,
+    Significance
+  )
 
-# load loo objects
-loo_u_simple <- load_loo("./results/loo/loo_trunc_simplified_model_unaware_exp11.rdata")
-loo_u_learn  <- load_loo("./results/loo/loo_trunc_simplified_learning_unaware_exp11.rdata")
-loo_u_boost  <- load_loo("./results/loo/loo_trunc_simplified_boost_unaware_exp11.rdata")
+# -------------------------------------------------------------------
+# 10. Print results
+# -------------------------------------------------------------------
+cat("\n==============================================================\n")
+cat("BAYESIAN EXCEEDANCE PROBABILITY TEST RESULTS\n")
+cat("4-PARAM MODEL: alpha, beta, lambda, eta\n")
+cat("Delta removed\n")
+cat("Ordering: Explicit Aware > Implicit Aware > Implicit Unaware\n")
+cat("==============================================================\n")
 
-loo_ia_simple <- load_loo("./results/loo/loo_trunc_simplified_model_aware_exp11.rdata")
-loo_ia_learn  <- load_loo("./results/loo/loo_trunc_simplified_learning_aware_exp11.rdata")
-loo_ia_boost  <- load_loo("./results/loo/loo_trunc_simplified_boost_aware_exp11.rdata")
-
-loo_ea_simple <- load_loo("./results/loo/loo_trunc_simplified_model_aware_exp12.rdata")
-loo_ea_learn  <- load_loo("./results/loo/loo_trunc_simplified_learning_aware_exp12.rdata")
-loo_ea_boost  <- load_loo("./results/loo/loo_trunc_simplified_boost_aware_exp12.rdata")
-
-# compute shared ylim across all panels (so they compare nicely)
-get_ylim <- function(looS, looL, looB){
-  d <- as.data.frame(loo_compare(list(simple=looS, learn=looL, boost=looB)))
-  y <- d$elpd_diff; se <- d$se_diff
-  c(y-se, y+se, 0)
-}
-all_vals <- c(get_ylim(loo_u_simple, loo_u_learn, loo_u_boost),
-              get_ylim(loo_ia_simple, loo_ia_learn, loo_ia_boost),
-              get_ylim(loo_ea_simple, loo_ea_learn, loo_ea_boost))
-ylim_shared <- range(all_vals) * 1.08
-
-par(mfrow=c(1,3), mar=c(8,5,4,1))
-plot_vs_best("Implicit Unaware", loo_u_simple, loo_u_learn, loo_u_boost, col_unaware, ylim_shared)
-plot_vs_best("Implicit Aware",   loo_ia_simple, loo_ia_learn, loo_ia_boost, col_iaware,  ylim_shared)
-plot_vs_best("Explicit Aware",   loo_ea_simple, loo_ea_learn, loo_ea_boost, col_eaware,  ylim_shared)
-par(mfrow=c(1,1))
-
+print(results_df, n = Inf)
 
 # ===============================================================
-# Probability distortion curves (3 awareness groups)
-# Uses posterior draws from Stan fits (CmdStanR .rds or cmdstan csv)
-# Distortion: p' = inv_logit(alpha * logit(p) + beta)
+# Plot ELPD comparison across groups
 # ===============================================================
+
+# Nice labels for plotting
+loo_summary$model_label <- dplyr::case_when(
+  loo_summary$model == "simple_model"   ~ "Simple",
+  loo_summary$model == "learning_model" ~ "Learning",
+  loo_summary$model == "eta_model"      ~ "Eta",
+  loo_summary$model == "learning_boost" ~ "Learning + boost",
+  TRUE ~ loo_summary$model
+)
+
+loo_summary$group_label <- dplyr::case_when(
+  loo_summary$group == "Exp11 Unaware" ~ "Implicit Unaware",
+  loo_summary$group == "Exp11 Aware"   ~ "Implicit Aware",
+  loo_summary$group == "Exp12 Aware"   ~ "Explicit Aware",
+  TRUE ~ loo_summary$group
+)
+
+# Keep consistent model order
+loo_summary$model_label <- factor(
+  loo_summary$model_label,
+  levels = c("Simple", "Learning", "Eta", "Learning + boost")
+)
+
+loo_summary$group_label <- factor(
+  loo_summary$group_label,
+  levels = c("Implicit Unaware", "Implicit Aware", "Explicit Aware")
+)
+
+# Colours matching your group palette
+group_cols <- c(
+  "Implicit Unaware" = rgb(0.56, 0.93, 0.56),
+  "Implicit Aware"   = rgb(0.00, 0.50, 0.00),
+  "Explicit Aware"   = rgb(1.00, 0.65, 0.00)
+)
+
+# ---------------------------------------------------------------
+# Plot 1: ΔELPD relative to best model within each group
+# Best model is always 0. Worse models are negative.
+# ---------------------------------------------------------------
+
+p_elpd_diff <- ggplot(
+  loo_summary,
+  aes(
+    x = model_label,
+    y = elpd_diff,
+    fill = group_label
+  )
+) +
+  geom_col(width = 0.75, colour = "black", linewidth = 0.2) +
+  geom_errorbar(
+    aes(
+      ymin = elpd_diff - se_diff,
+      ymax = elpd_diff + se_diff
+    ),
+    width = 0.18,
+    linewidth = 0.7
+  ) +
+  geom_hline(yintercept = 0, linetype = "dashed", linewidth = 0.7) +
+  facet_wrap(~ group_label, nrow = 1) +
+  scale_fill_manual(values = group_cols) +
+  labs(
+    x = "Model",
+    y = expression(Delta * ELPD ~ "(vs best model)"),
+    title = "LOO model comparison"
+  ) +
+  theme_classic(base_size = 14) +
+  theme(
+    legend.position = "none",
+    strip.background = element_blank(),
+    strip.text = element_text(size = 14, face = "bold"),
+    axis.text.x = element_text(angle = 35, hjust = 1),
+    plot.title = element_text(face = "bold", hjust = 0.5)
+  )
+
+print(p_elpd_diff)
+
+# Save figure
+ggsave(
+  filename = file.path(loo_dir, "loo_elpd_diff_4models_3groups.png"),
+  plot = p_elpd_diff,
+  width = 11,
+  height = 4.5,
+  dpi = 300
+)
+
+ggsave(
+  filename = file.path(loo_dir, "loo_elpd_diff_4models_3groups.pdf"),
+  plot = p_elpd_diff,
+  width = 11,
+  height = 4.5
+)
+
+
+# ---------------------------------------------------------------
+# Plot 2: raw ELPD values
+# Higher is better, but values are negative.
+# ---------------------------------------------------------------
+
+p_elpd_raw <- ggplot(
+  loo_summary,
+  aes(
+    x = model_label,
+    y = elpd_loo,
+    fill = group_label
+  )
+) +
+  geom_col(width = 0.75, colour = "black", linewidth = 0.2) +
+  geom_errorbar(
+    aes(
+      ymin = elpd_loo - se_elpd_loo,
+      ymax = elpd_loo + se_elpd_loo
+    ),
+    width = 0.18,
+    linewidth = 0.7
+  ) +
+  facet_wrap(~ group_label, nrow = 1, scales = "free_y") +
+  scale_fill_manual(values = group_cols) +
+  labs(
+    x = "Model",
+    y = "ELPD-LOO",
+    title = "Raw ELPD-LOO by model"
+  ) +
+  theme_classic(base_size = 14) +
+  theme(
+    legend.position = "none",
+    strip.background = element_blank(),
+    strip.text = element_text(size = 14, face = "bold"),
+    axis.text.x = element_text(angle = 35, hjust = 1),
+    plot.title = element_text(face = "bold", hjust = 0.5)
+  )
+
+print(p_elpd_raw)
+
+ggsave(
+  filename = file.path(loo_dir, "loo_elpd_raw_4models_3groups.png"),
+  plot = p_elpd_raw,
+  width = 11,
+  height = 4.5,
+  dpi = 300
+)
+
+ggsave(
+  filename = file.path(loo_dir, "loo_elpd_raw_4models_3groups.pdf"),
+  plot = p_elpd_raw,
+  width = 11,
+  height = 4.5
+)
+
+
+
+
+
+
+
+
+
+
+############################################
+## DELTA–ETA RELATIONSHIP / TRADE-OFF CHECK
+############################################
 
 rm(list = ls(all = TRUE))
 
+library(tidyverse)
 library(posterior)
-# cmdstanr is optional if you only readRDS CmdStanMCMC objects
-# library(cmdstanr)
+library(ggplot2)
 
-# -----------------------------
-# Helpers
-# -----------------------------
-logit <- function(p) log(p / (1 - p))
+# -------------------------------------------------------------------------
+# Paths
+# -------------------------------------------------------------------------
 
-# Load a CmdStanR fit saved as .rds
-read_fit <- function(path) {
-  if (!file.exists(path)) stop("Missing fit file: ", path)
-  readRDS(path)
+base_dir <- "/Users/bty615/Documents/GitHub/reliable_info_bias"
+fits_dir <- file.path(base_dir, "results", "fits", "Exp12")
+fig_dir  <- file.path(base_dir, "results", "figures")
+
+if (!dir.exists(fig_dir)) {
+  dir.create(fig_dir, recursive = TRUE)
 }
 
-# Extract posterior draws for mu_alpha and mu_beta
-# Works if generated quantities include mu_alpha/mu_beta,
-# otherwise falls back to mu_pr[1], mu_pr[2] with your transforms:
-#   mu_alpha = Phi(mu_pr[1]) * 6
-#   mu_beta  = mu_pr[2]
-extract_mu_alpha_beta <- function(fit) {
-  # Try to grab mu_alpha/mu_beta directly
-  vars_try <- c("mu_alpha", "mu_beta", "mu_pr[1]", "mu_pr[2]")
-  draws <- posterior::as_draws_df(fit$draws(variables = vars_try))
-  
-  has_mu_alpha <- "mu_alpha" %in% names(draws)
-  has_mu_beta  <- "mu_beta"  %in% names(draws)
-  
-  # Alpha
-  if (has_mu_alpha) {
-    alpha <- draws$mu_alpha
-  } else if ("mu_pr[1]" %in% names(draws)) {
-    alpha <- pnorm(draws$`mu_pr[1]`) * 6
-  } else {
-    stop("Couldn't find mu_alpha or mu_pr[1] in draws().")
-  }
-  
-  # Beta
-  if (has_mu_beta) {
-    beta <- draws$mu_beta
-  } else if ("mu_pr[2]" %in% names(draws)) {
-    beta <- draws$`mu_pr[2]`
-  } else {
-    stop("Couldn't find mu_beta or mu_pr[2] in draws().")
-  }
-  
-  list(alpha = as.numeric(alpha), beta = as.numeric(beta))
-}
+# -------------------------------------------------------------------------
+# Fit files
+# Use the BOOST model here because this is the model containing delta + eta
+# from your latest parameter results.
+# -------------------------------------------------------------------------
 
-# Compute distortion curve summary from posterior draws
-curve_from_draws <- function(alpha, beta, p_grid) {
-  lg <- logit(p_grid)
-  
-  # matrix: ndraws x ngrid
-  linpred <- tcrossprod(alpha, lg) + beta
-  pprime  <- plogis(linpred)
-  
-  mu <- colMeans(pprime)
-  lo <- apply(pprime, 2, quantile, probs = 0.025)
-  hi <- apply(pprime, 2, quantile, probs = 0.975)
-  
-  list(mu = mu, lo = lo, hi = hi)
-}
-
-# Optional: summary at specific reliability points
-points_from_draws <- function(alpha, beta, p_pts) {
-  lg <- logit(p_pts)
-  linpred <- tcrossprod(alpha, lg) + beta
-  pprime  <- plogis(linpred)
-  
-  mu <- colMeans(pprime)
-  lo <- apply(pprime, 2, quantile, probs = 0.025)
-  hi <- apply(pprime, 2, quantile, probs = 0.975)
-  
-  data.frame(p = p_pts, mu = mu, lo = lo, hi = hi)
-}
-
-# -----------------------------
-# SET YOUR FIT PATHS HERE
-# Use best-fitting model per group if you want:
-#   - Implicit Unaware: Simple (αβλ)
-#   - Implicit Aware:   Boost  (αβλδη)
-#   - Explicit Aware:   Boost  (αβλδη)
-# -----------------------------
-fit_paths <- list(
-  implicit_unaware = "./results/fits/FIT_FILE_FOR_SIMPLE_unaware_exp11.rds",
-  implicit_aware   = "./results/fits/FIT_FILE_FOR_BOOST_aware_exp11.rds",
-  explicit_aware   = "./results/fits/FIT_FILE_FOR_BOOST_aware_exp12.rds"
-)
-
-# Colours (your palette)
-cols <- list(
-  implicit_unaware = rgb(0.56, 0.93, 0.56),
-  implicit_aware   = rgb(0.00, 0.50, 0.00),
-  explicit_aware   = rgb(1.00, 0.65, 0.00)
-)
-
-titles <- c(
-  implicit_unaware = "Implicit Unaware",
-  implicit_aware   = "Implicit Aware",
-  explicit_aware   = "Explicit Aware"
-)
-
-# -----------------------------
-# Build curves
-# -----------------------------
-p_grid <- seq(0.01, 0.99, length.out = 400)
-
-fits <- lapply(fit_paths, read_fit)
-pars <- lapply(fits, extract_mu_alpha_beta)
-
-curves <- mapply(
-  function(pr) curve_from_draws(pr$alpha, pr$beta, p_grid),
-  pars,
-  SIMPLIFY = FALSE
-)
-
-# Optional: reliability points (50/55/65)
-p_pts <- c(0.50, 0.55, 0.65)
-pt_summ <- mapply(
-  function(pr) points_from_draws(pr$alpha, pr$beta, p_pts),
-  pars,
-  SIMPLIFY = FALSE
-)
-
-# -----------------------------
-# Plot: single panel with 3 curves
-# -----------------------------
-png("probability_distortion_3groups.png", width = 1400, height = 900, res = 150)
-
-plot(p_grid * 100, curves[[1]]$mu * 100,
-     type = "n",
-     xlab = "True reliability (%)",
-     ylab = "Distorted reliability (%)",
-     xlim = c(0, 100),
-     ylim = c(0, 100),
-     asp = 1,
-     bty = "n")
-
-abline(0, 1, lty = 2, col = "gray40", lwd = 2)
-
-for (nm in names(curves)) {
-  col <- cols[[nm]]
-  cu  <- curves[[nm]]
-  
-  # 95% band
-  polygon(
-    x = c(p_grid, rev(p_grid)) * 100,
-    y = c(cu$lo, rev(cu$hi)) * 100,
-    col = adjustcolor(col, alpha.f = 0.20),
-    border = NA
+fit_files <- tibble(
+  group = c(
+    "Implicit Unaware Base Rate",
+    "Implicit Aware Base Rate",
+    "Explicit Undirected Base Rate",
+    "Explicit True Base Rate",
+    "Explicit Deceptive Base Rate"
+  ),
+  file = c(
+    "fit_trunc_boost_model_unaware_exp11.rdata",
+    "fit_trunc_boost_model_aware_exp11.rdata",
+    "fit_trunc_boost_model_aware_exp12.rdata",
+    "fit_trunc_boost_truthful_exp13.rdata",
+    "fit_trunc_boost_deceptive_exp13.rdata"
   )
+) %>%
+  mutate(path = file.path(fits_dir, file))
+
+# -------------------------------------------------------------------------
+# Extract delta and eta from one fit
+# -------------------------------------------------------------------------
+
+extract_delta_eta <- function(path, group_name) {
   
-  # mean line
-  lines(p_grid * 100, cu$mu * 100, col = col, lwd = 3)
+  if (!file.exists(path)) {
+    stop("Missing fit file: ", path)
+  }
   
-  # optional points at 50/55/65 with 95% CI
-  pts <- pt_summ[[nm]]
-  points(pts$p * 100, pts$mu * 100, pch = 16, cex = 1.2, col = col)
-  arrows(pts$p * 100, pts$lo * 100, pts$p * 100, pts$hi * 100,
-         angle = 90, code = 3, length = 0.03, lwd = 2, col = col)
+  env <- new.env()
+  load(path, envir = env)
+  
+  if (!exists("fit", envir = env)) {
+    stop("No object called 'fit' found in: ", path)
+  }
+  
+  draws <- as_draws_df(env$fit$draws())
+  
+  # Case 1: transformed parameters already exist
+  if (all(c("mu_delta", "mu_eta") %in% names(draws))) {
+    
+    out <- draws %>%
+      select(mu_delta, mu_eta)
+    
+  } else {
+    
+    # Case 2: raw mu_pr columns
+    mu_cols <- names(draws)[grepl("^mu_pr(\\[|\\.)", names(draws))]
+    
+    if (length(mu_cols) < 5) {
+      stop("Could not find mu_delta/mu_eta or enough mu_pr columns in: ", path)
+    }
+    
+    out <- draws %>%
+      select(all_of(mu_cols[c(4, 5)]))
+    
+    names(out) <- c("mu_delta", "mu_eta")
+    
+    out <- out %>%
+      mutate(
+        mu_delta = pnorm(mu_delta) * 2
+        # eta remains untransformed
+      )
+  }
+  
+  out %>%
+    mutate(group = group_name)
 }
 
-legend("topleft",
-       legend = titles[names(curves)],
-       col = unlist(cols[names(curves)]),
-       lwd = 3, bty = "n")
+# -------------------------------------------------------------------------
+# Combine draws across groups
+# -------------------------------------------------------------------------
 
-dev.off()
+delta_eta_draws <- map2_dfr(
+  fit_files$path,
+  fit_files$group,
+  extract_delta_eta
+)
 
-# -----------------------------
-# Plot: 3-panel version (optional)
-# -----------------------------
-png("probability_distortion_3panels.png", width = 1700, height = 700, res = 150)
+group_levels <- c(
+  "Implicit Unaware Base Rate",
+  "Implicit Aware Base Rate",
+  "Explicit Undirected Base Rate",
+  "Explicit True Base Rate",
+  "Explicit Deceptive Base Rate"
+)
 
-op <- par(mfrow = c(1, 3), mar = c(5, 5, 4, 1))
-on.exit(par(op), add = TRUE)
+delta_eta_draws <- delta_eta_draws %>%
+  mutate(group = factor(group, levels = group_levels))
 
-for (nm in names(curves)) {
-  col <- cols[[nm]]
-  cu  <- curves[[nm]]
-  
-  plot(p_grid * 100, cu$mu * 100,
-       type = "n",
-       main = titles[[nm]],
-       xlab = "True reliability (%)",
-       ylab = "Distorted reliability (%)",
-       xlim = c(0, 100),
-       ylim = c(0, 100),
-       asp = 1,
-       bty = "n")
-  
-  abline(0, 1, lty = 2, col = "gray40", lwd = 2)
-  
-  polygon(c(p_grid, rev(p_grid)) * 100,
-          c(cu$lo, rev(cu$hi)) * 100,
-          col = adjustcolor(col, alpha.f = 0.20),
-          border = NA)
-  
-  lines(p_grid * 100, cu$mu * 100, col = col, lwd = 3)
-  
-  pts <- pt_summ[[nm]]
-  points(pts$p * 100, pts$mu * 100, pch = 16, cex = 1.2, col = col)
-  arrows(pts$p * 100, pts$lo * 100, pts$p * 100, pts$hi * 100,
-         angle = 90, code = 3, length = 0.03, lwd = 2, col = col)
+# -------------------------------------------------------------------------
+# Correlation table
+# -------------------------------------------------------------------------
+
+delta_eta_corrs <- delta_eta_draws %>%
+  group_by(group) %>%
+  summarise(
+    mean_delta = mean(mu_delta, na.rm = TRUE),
+    mean_eta   = mean(mu_eta, na.rm = TRUE),
+    r_delta_eta = cor(mu_delta, mu_eta, use = "complete.obs"),
+    .groups = "drop"
+  )
+
+cat("\n====================================================\n")
+cat("DELTA–ETA POSTERIOR CORRELATIONS\n")
+cat("====================================================\n")
+print(delta_eta_corrs, n = Inf)
+
+# -------------------------------------------------------------------------
+# Plot delta against eta
+# -------------------------------------------------------------------------
+
+p <- ggplot(delta_eta_draws, aes(x = mu_delta, y = mu_eta)) +
+  geom_point(alpha = 0.12, size = 0.45) +
+  geom_smooth(method = "lm", se = TRUE, linewidth = 0.8) +
+  geom_vline(xintercept = 1, linetype = "dashed", colour = "red") +
+  geom_hline(yintercept = 0, linetype = "dashed", colour = "red") +
+  facet_wrap(~group, scales = "free") +
+  theme_bw(base_size = 13) +
+  labs(
+    title = "Posterior relationship between delta and eta",
+    subtitle = "Checks whether belief updating and confirmation-asymmetry parameters covary",
+    x = "delta",
+    y = "eta"
+  ) +
+  theme(
+    strip.text = element_text(face = "bold", size = 10),
+    axis.title = element_text(face = "bold"),
+    plot.title = element_text(face = "bold"),
+    panel.grid.minor = element_blank()
+  )
+
+print(p)
+
+ggsave(
+  filename = file.path(fig_dir, "delta_eta_posterior_relationship_5groups.png"),
+  plot = p,
+  width = 10,
+  height = 7,
+  dpi = 300
+)
+
+ggsave(
+  filename = file.path(fig_dir, "delta_eta_posterior_relationship_5groups.pdf"),
+  plot = p,
+  width = 10,
+  height = 7
+)
+
+# -------------------------------------------------------------------------
+# Optional: flag possible trade-offs
+# -------------------------------------------------------------------------
+
+cat("\nInterpretation guide:\n")
+cat("r close to 0 = little evidence of posterior trade-off between delta and eta.\n")
+cat("|r| around .5 or larger = possible parameter trade-off / identifiability concern.\n")
+
+
+
+
+
+
+
+
+
+############################################
+## CHECK WHETHER CHOICE-AGAINST-PRIOR TRIALS
+## DRIVE PRIOR-INCONGRUENT EVIDENCE EFFECTS
+############################################
+
+rm(list = ls(all = TRUE))
+
+library(tidyverse)
+library(ggplot2)
+library(broom)
+
+base_dir <- "/Users/bty615/Documents/GitHub/reliable_info_bias"
+data_dir <- file.path(base_dir, "data")
+fig_dir  <- file.path(base_dir, "results", "figures")
+
+if (!dir.exists(fig_dir)) {
+  dir.create(fig_dir, recursive = TRUE)
 }
 
-dev.off()
+# ------------------------------------------------------------
+# Data files
+# ------------------------------------------------------------
 
-cat("Saved:\n  probability_distortion_3groups.png\n  probability_distortion_3panels.png\n")
+data_files <- tibble(
+  group = c(
+    "Implicit Unaware Base Rate",
+    "Implicit Aware Base Rate",
+    "Explicit Undirected Base Rate",
+    "Explicit True Base Rate",
+    "Explicit Deceptive Base Rate"
+  ),
+  file = c(
+    "data_priorbelief_unaware_exp11.rdata",
+    "data_priorbelief_aware_exp11.rdata",
+    "data_priorbelief_aware_exp12.rdata",
+    "data_priorbelief_truthful_exp13.rdata",
+    "data_priorbelief_deceptive_exp13.rdata"
+  )
+) %>%
+  mutate(path = file.path(data_dir, file))
+
+# ------------------------------------------------------------
+# Load and prepare data
+# ------------------------------------------------------------
+
+load_one_group <- function(path, group_name) {
+  
+  env <- new.env()
+  load(path, envir = env)
+  
+  data <- env$data
+  
+  # Exp12 sometimes uses Manipulation_ResponseButtonOrder
+  if (!"ResponseButtonOrder" %in% names(data) &&
+      "Manipulation_ResponseButtonOrder" %in% names(data)) {
+    data <- data %>%
+      rename(ResponseButtonOrder = Manipulation_ResponseButtonOrder)
+  }
+  
+  data <- data %>%
+    mutate(
+      choice = case_when(
+        ResponseButtonOrder == 0 & Response == 0 ~ 1, # blue
+        ResponseButtonOrder == 0 & Response == 1 ~ 2, # red
+        ResponseButtonOrder == 1 & Response == 0 ~ 2, # red
+        ResponseButtonOrder == 1 & Response == 1 ~ 1, # blue
+        TRUE ~ NA_real_
+      )
+    ) %>%
+    mutate(
+      across(
+        starts_with("color"),
+        ~ case_when(
+          . == "blue" ~ 1,
+          . == "red"  ~ 2,
+          TRUE ~ NA_real_
+        )
+      )
+    )
+  
+  # Prior-aligned evidence:
+  # positive = evidence favours prior
+  # negative = evidence favours opposite colour
+  data <- data %>%
+    rowwise() %>%
+    mutate(
+      evidence_prior = sum(
+        qlogis(c_across(starts_with("proba_")) / 100) *
+          ifelse(c_across(starts_with("color_")) == Prior_Belief, 1, -1),
+        na.rm = TRUE
+      ),
+      choose_prior = as.numeric(choice == Prior_Belief),
+      choose_against_prior = as.numeric(choice != Prior_Belief)
+    ) %>%
+    ungroup() %>%
+    mutate(
+      group = group_name,
+      evidence_bin = case_when(
+        evidence_prior < -1.0 ~ "Strong evidence against prior",
+        evidence_prior >= -1.0 & evidence_prior < -0.25 ~ "Weak evidence against prior",
+        evidence_prior >= -0.25 & evidence_prior <= 0.25 ~ "Neutral / balanced",
+        evidence_prior > 0.25 & evidence_prior <= 1.0 ~ "Weak evidence for prior",
+        evidence_prior > 1.0 ~ "Strong evidence for prior",
+        TRUE ~ NA_character_
+      )
+    )
+  
+  data
+}
+
+all_data <- map2_dfr(
+  data_files$path,
+  data_files$group,
+  load_one_group
+)
+
+# ------------------------------------------------------------
+# 1. How often do people choose against the prior by evidence bin?
+# ------------------------------------------------------------
+
+choice_against_summary <- all_data %>%
+  group_by(group, evidence_bin) %>%
+  summarise(
+    p_choose_against_prior = mean(choose_against_prior, na.rm = TRUE),
+    p_choose_prior = mean(choose_prior, na.rm = TRUE),
+    n = n(),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    evidence_bin = factor(
+      evidence_bin,
+      levels = c(
+        "Strong evidence against prior",
+        "Weak evidence against prior",
+        "Neutral / balanced",
+        "Weak evidence for prior",
+        "Strong evidence for prior"
+      )
+    )
+  )
+
+cat("\n====================================================\n")
+cat("CHOICE AGAINST PRIOR BY EVIDENCE BIN\n")
+cat("====================================================\n")
+print(choice_against_summary, n = Inf)
+
+# ------------------------------------------------------------
+# 2. Plot: choice against prior as function of prior-aligned evidence
+# ------------------------------------------------------------
+
+p1 <- ggplot(choice_against_summary,
+             aes(x = evidence_bin, y = p_choose_against_prior)) +
+  geom_col(width = 0.7) +
+  facet_wrap(~group, nrow = 1) +
+  labs(
+    title = "Choice against prior by prior-aligned evidence",
+    x = "Evidence direction",
+    y = "P(choose against prior)"
+  ) +
+  theme_bw(base_size = 12) +
+  theme(
+    axis.text.x = element_text(angle = 35, hjust = 1, face = "bold"),
+    strip.text = element_text(face = "bold"),
+    axis.title = element_text(face = "bold"),
+    panel.grid.minor = element_blank()
+  )
+
+print(p1)
+
+ggsave(
+  filename = file.path(fig_dir, "choice_against_prior_by_evidence_bin.png"),
+  plot = p1,
+  width = 14,
+  height = 5,
+  dpi = 300
+)
+
+# ------------------------------------------------------------
+# 3. Logistic model:
+# Does prior-inconsistent evidence predict choosing against the prior?
+# ------------------------------------------------------------
+
+models_choice_against <- all_data %>%
+  group_by(group) %>%
+  group_modify(~ {
+    
+    m <- glm(
+      choose_against_prior ~ evidence_prior,
+      data = .x,
+      family = binomial()
+    )
+    
+    tidy(m)
+  }) %>%
+  ungroup()
+
+cat("\n====================================================\n")
+cat("LOGISTIC MODEL: CHOOSE AGAINST PRIOR ~ PRIOR-ALIGNED EVIDENCE\n")
+cat("====================================================\n")
+print(models_choice_against, n = Inf)
+
+# Interpretation:
+# evidence_prior is positive when evidence favours prior.
+# Therefore, a NEGATIVE coefficient means:
+# stronger evidence for the prior reduces choosing against prior.
+# equivalently, evidence against the prior increases choosing against prior.
+
+# ------------------------------------------------------------
+# 4. Compare anti-prior choices vs prior choices
+# ------------------------------------------------------------
+
+anti_prior_distribution <- all_data %>%
+  group_by(group, choose_against_prior) %>%
+  summarise(
+    mean_evidence_prior = mean(evidence_prior, na.rm = TRUE),
+    median_evidence_prior = median(evidence_prior, na.rm = TRUE),
+    l95 = quantile(evidence_prior, 0.025, na.rm = TRUE),
+    u95 = quantile(evidence_prior, 0.975, na.rm = TRUE),
+    n = n(),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    choice_type = ifelse(
+      choose_against_prior == 1,
+      "Chose against prior",
+      "Chose prior"
+    )
+  )
+
+cat("\n====================================================\n")
+cat("EVIDENCE DISTRIBUTION FOR PRIOR VS AGAINST-PRIOR CHOICES\n")
+cat("====================================================\n")
+print(anti_prior_distribution, n = Inf)
+
+p2 <- ggplot(all_data,
+             aes(x = factor(choose_against_prior),
+                 y = evidence_prior)) +
+  geom_boxplot(outlier.shape = NA, width = 0.65) +
+  geom_hline(yintercept = 0, linetype = "dashed", colour = "red") +
+  facet_wrap(~group, nrow = 1) +
+  scale_x_discrete(
+    labels = c("0" = "Chose prior", "1" = "Chose against prior")
+  ) +
+  labs(
+    title = "Prior-aligned evidence on prior vs against-prior choices",
+    x = NULL,
+    y = "Evidence favouring prior"
+  ) +
+  theme_bw(base_size = 12) +
+  theme(
+    axis.text.x = element_text(angle = 25, hjust = 1, face = "bold"),
+    strip.text = element_text(face = "bold"),
+    axis.title = element_text(face = "bold"),
+    panel.grid.minor = element_blank()
+  )
+
+print(p2)
+
+ggsave(
+  filename = file.path(fig_dir, "evidence_prior_vs_against_prior_choices.png"),
+  plot = p2,
+  width = 14,
+  height = 5,
+  dpi = 300
+)
+
+
+
+data <- data %>%
+  mutate(
+    analysis_prior = case_when(
+      group == "Explicit Deceptive Base Rate" & "InstructedPrior" %in% names(data) ~ InstructedPrior,
+      TRUE ~ Prior_Belief
+    )
+  )
+
+data <- data %>%
+  mutate(
+    analysis_prior = case_when(
+      group == "Explicit Deceptive Base Rate" & "InstructedPrior" %in% names(data) ~ InstructedPrior,
+      TRUE ~ Prior_Belief
+    )
+  )

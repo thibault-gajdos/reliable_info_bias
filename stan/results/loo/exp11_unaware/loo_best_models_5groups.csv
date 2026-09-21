@@ -1,0 +1,6 @@
+"group","model","elpd_loo","se_elpd_loo"
+"Exp11 Aware","learning_boost",-2951.90806557143,48.8670249593068
+"Exp11 Unaware","simple_model",-1466.60459528891,39.3814277140804
+"Exp12 Aware","eta_model",-2119.61013183867,43.1658673360996
+"Exp13 Deceptive","eta_model",-1928.64116301993,41.625354424531
+"Exp13 Truthful","learning_boost",-1832.67464565076,43.159868431154
