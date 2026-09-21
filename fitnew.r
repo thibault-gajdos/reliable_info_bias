@@ -9,8 +9,7 @@ library(loo)
 ##################################################
 ## PREPARE THE DATA
 ##################################################
-
-load("/Users/bty615/Documents/GitHub/reliable_info_bias/data/data_priorbelief_unaware_exp11.rdata")
+load("/Users/bty615/Documents/GitHub/reliable_info_bias/data/data_priorbelief_deceptive_exp13.rdata")
 
 ## Response coding:
 ## If ResponseButtonOrder = 1: blue -> 1, red -> 0
@@ -53,10 +52,10 @@ mutate(
   ## CorrectResponse is button-coded, so it must also
   ## be converted into the objectively correct colour.
   feedback = case_when(
-   ResponseButtonOrder == 1 & CorrectResponse == 1 ~ 1L, # Blue
-   ResponseButtonOrder == 1 & CorrectResponse == 0 ~ 0L, # Red
-   ResponseButtonOrder == 0 & CorrectResponse == 0 ~ 1L, # Blue
-   ResponseButtonOrder == 0 & CorrectResponse == 1 ~ 0L, # Red
+    ResponseButtonOrder == 1 & CorrectResponse == 1 ~ 1L, # Blue
+    ResponseButtonOrder == 1 & CorrectResponse == 0 ~ 0L, # Red
+    ResponseButtonOrder == 0 & CorrectResponse == 0 ~ 1L, # Blue
+    ResponseButtonOrder == 0 & CorrectResponse == 1 ~ 0L, # Red
     TRUE ~ NA_integer_
   )
 )
@@ -189,19 +188,19 @@ dir.create("./results/loo/exp11_unaware/", recursive = TRUE, showWarnings = FALS
 
 save(
   fit,
-  file = "./results/fits/exp11_unaware/localeta_unaware_exp11.rdata"
+  file = "./results/fits/exp11_unaware/localeta_deceptive_exp13.rdata"
 )
 
 save(
   loo_result,
-  file = "./results/loo/exp11_unaware/localeta_unaware_exp11.rdata"
+  file = "./results/loo/exp11_unaware/localeta_deceptive_exp13.rdata"
 )
 
 cat("\nSaved fit to:\n")
-cat("./results/fits/exp11_unaware/localeta_unaware_exp11.rdata\n")
+cat("./results/fits/exp11_unaware/localeta_deceptive_exp13.rdata\n")
 
 cat("\nSaved LOO to:\n")
-cat("./results/loo/exp11_unaware/localeta_unaware_exp11.rdata\n")
+cat("./results/loo/exp11_unaware/localeta_deceptive_exp13.rdata\n")
 
 
 
