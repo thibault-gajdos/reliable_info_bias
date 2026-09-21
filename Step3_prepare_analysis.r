@@ -16,7 +16,7 @@ exp <- 13
 
 fit_path <- paste0(
   "stan/results/fits/exp11_unaware/",
-  "fit_trunc_boost_deceptive_exp13.rdata"
+  "fit_trunc_boost_aware_exp12.rdata"
 )
 
 if (!file.exists(fit_path)) {
@@ -69,7 +69,7 @@ if (exp == 13) {
     log_trunc_boost.group,
     file = file.path(
       summary_folder,
-      "summary_group_log_boost_deceptive_exp13.rdata"
+      "summary_group_log_boost_aware_exp12.rdata"
     )
   )
 }
@@ -133,7 +133,7 @@ if (exp == 13) {
     log_trunc_boost.individual,
     file = file.path(
       summary_folder,
-      "summary_individual_log_trunc_boost_deceptive_exp13.rdata"
+      "summary_individual_log_trunc_boost_aware_exp12.rdata"
     )
   )
 }
@@ -151,7 +151,7 @@ cat("\nGroup results saved to:\n")
 cat(
   file.path(
     summary_folder,
-    "summary_group_log_trunc_boost_deceptive_exp13.rdata"
+    "summary_group_log_trunc_boost_aware_exp12.rdata"
   ),
   "\n"
 )
@@ -160,7 +160,7 @@ cat("\nIndividual results saved to:\n")
 cat(
   file.path(
     summary_folder,
-    "summary_individual_log_trunc_boost_deceptive_exp13.rdata"
+    "summary_individual_log_trunc_boost_aware_exp12.rdata"
   ),
   "\n"
 )
@@ -174,7 +174,7 @@ cat(
 
 individual_csv <- file.path(
   summary_folder,
-  "param_individual_boost_deceptive_exp13.csv"
+  "param_individual_boost_aware_exp12.csv"
 )
 
 write_csv(

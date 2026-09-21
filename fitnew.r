@@ -10,7 +10,7 @@ library(loo)
 ## PREPARE THE DATA
 ##################################################
 
-load("/Users/bty615/Documents/GitHub/reliable_info_bias/data/data_priorbelief_aware_exp11.rdata")
+load("/Users/bty615/Documents/GitHub/reliable_info_bias/data/data_priorbelief_unaware_exp11.rdata")
 
 ## Response coding:
 ## If ResponseButtonOrder = 1: blue -> 1, red -> 0

@@ -528,26 +528,6 @@ ggsave(
 )
 
 # =========================================================================
-# PAIRWISE POSTERIOR CONTRASTS FOR LAMBDA
-# =========================================================================
-
-lambda_pairwise <- pairwise_stats %>%
-  filter(parameter == "lambda") %>%
-  mutate(
-    evidence_for_difference = case_when(
-      l95_difference > 0 | u95_difference < 0 ~ "95% CrI excludes 0",
-      p_group_1_gt_group_2 > .95 | p_group_1_lt_group_2 > .95 ~ "Strong directional posterior probability",
-      TRUE ~ "No strong evidence for a reliable difference"
-    )
-  )
-
-cat("\n=========================================================\n")
-cat("PAIRWISE POSTERIOR CONTRASTS FOR LAMBDA\n")
-cat("=========================================================\n")
-
-print(lambda_pairwise, n = Inf, width = Inf)
-
-# =========================================================================
 # 11. POSTERIOR STATS — ALL FIVE PARAMETERS × ALL FIVE GROUPS
 # =========================================================================
 
@@ -1529,19 +1509,19 @@ if (!dir.exists(fig_dir)) {
 # 3. Load fits
 # =========================================================
 
-load(file.path(fits_dir, "fit_trunc_global_eta_unaware_exp11.rdata"))
+load(file.path(fits_dir, "fit_trunc_boost_unaware_exp11.rdata"))
 fit_unaware <- fit
 
-load(file.path(fits_dir, "fit_trunc_global_eta_aware_exp11.rdata"))
+load(file.path(fits_dir, "fit_trunc_boost_aware_exp11.rdata"))
 fit_aware <- fit
 
-load(file.path(fits_dir, "fit_trunc_global_eta_aware_exp12.rdata"))
+load(file.path(fits_dir, "fit_trunc_boost_aware_exp12.rdata"))
 fit_explicit <- fit
 
-load(file.path(fits_dir, "fit_trunc_global_eta_truthful_exp13.rdata"))
+load(file.path(fits_dir, "fit_trunc_boost_truthful_exp13.rdata"))
 fit_true_direction <- fit
 
-load(file.path(fits_dir, "fit_trunc_global_eta_deceptive_exp13.rdata"))
+load(file.path(fits_dir, "fit_trunc_boost_deceptive_exp13.rdata"))
 fit_deceptive_direction <- fit
 
 rm(fit)
@@ -4029,3 +4009,468 @@ p <- ggplot(
 
 print(p)
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+library(tidyverse)
+
+# ============================================================
+# 1. FILES TO VALIDATE
+# ============================================================
+
+data_dir <- "/Users/bty615/Documents/GitHub/reliable_info_bias/data"
+
+group_files <- c(
+  "Implicit Unaware" =
+    "data_priorbelief_unaware_exp11.rdata",
+  
+  "Implicit Aware" =
+    "data_priorbelief_aware_exp11.rdata",
+  
+  "Explicit Undirected" =
+    "data_priorbelief_aware_exp12.rdata",
+  
+  "Explicit True" =
+    "data_priorbelief_truthful_exp13.rdata",
+  
+  "Explicit Deceptive" =
+    "data_priorbelief_deceptive_exp13.rdata"
+)
+
+# ============================================================
+# 2. VALIDATION FUNCTION
+# ============================================================
+
+validate_feedback <- function(group_name, filename) {
+  
+  cat("\n\n")
+  cat("############################################################\n")
+  cat("GROUP:", group_name, "\n")
+  cat("FILE: ", filename, "\n")
+  cat("############################################################\n\n")
+  
+  full_path <- file.path(data_dir, filename)
+  
+  if (!file.exists(full_path)) {
+    stop("File does not exist: ", full_path)
+  }
+  
+  # Load into a separate environment so files do not overwrite
+  # one another in the global environment
+  loaded_environment <- new.env()
+  
+  loaded_objects <- load(
+    full_path,
+    envir = loaded_environment
+  )
+  
+  cat(
+    "Objects in file:",
+    paste(loaded_objects, collapse = ", "),
+    "\n"
+  )
+  
+  if (!"data" %in% loaded_objects) {
+    stop(
+      "The file for ", group_name,
+      " does not contain an object named 'data'."
+    )
+  }
+  
+  current_data <- loaded_environment$data
+  
+  # Exp12 used a different button-order column name
+  if (
+    "Manipulation_ResponseButtonOrder" %in%
+    names(current_data)
+  ) {
+    current_data <- current_data %>%
+      rename(
+        ResponseButtonOrder =
+          Manipulation_ResponseButtonOrder
+      )
+  }
+  
+  # ----------------------------------------------------------
+  # Check required columns
+  # ----------------------------------------------------------
+  
+  required_variables <- c(
+    "ResponseButtonOrder",
+    "Response",
+    "CorrectResponse",
+    "Stimulus",
+    "Accuracy"
+  )
+  
+  missing_variables <- setdiff(
+    required_variables,
+    names(current_data)
+  )
+  
+  if (length(missing_variables) > 0) {
+    stop(
+      group_name,
+      " is missing: ",
+      paste(missing_variables, collapse = ", ")
+    )
+  }
+  
+  # Locate participant ID column
+  possible_id_columns <- c(
+    "ParticipantPrivateID",
+    "Participant_Private_ID",
+    "Subject",
+    "subject",
+    "participant"
+  )
+  
+  id_column <- possible_id_columns[
+    possible_id_columns %in% names(current_data)
+  ][1]
+  
+  if (is.na(id_column)) {
+    warning(
+      "No participant ID column found for ",
+      group_name,
+      ". Participant counts will be missing."
+    )
+  }
+  
+  # ----------------------------------------------------------
+  # Create old, corrected and objective feedback
+  # ----------------------------------------------------------
+  
+  checked_data <- current_data %>%
+    mutate(
+      Stimulus = str_to_lower(
+        as.character(Stimulus)
+      ),
+      
+      # Old model-feedback construction
+      feedback_old = case_when(
+        CorrectResponse == 1 ~ 1L,
+        CorrectResponse == 0 ~ 0L,
+        TRUE ~ NA_integer_
+      ),
+      
+      # Corrected model-feedback construction
+      # 1 = Blue correct; 0 = Red correct
+      feedback_corrected = case_when(
+        ResponseButtonOrder == 1 &
+          CorrectResponse == 1 ~ 1L,
+        
+        ResponseButtonOrder == 1 &
+          CorrectResponse == 0 ~ 0L,
+        
+        ResponseButtonOrder == 0 &
+          CorrectResponse == 0 ~ 1L,
+        
+        ResponseButtonOrder == 0 &
+          CorrectResponse == 1 ~ 0L,
+        
+        TRUE ~ NA_integer_
+      ),
+      
+      # Independent ground-truth check from Gorilla
+      feedback_from_stimulus = case_when(
+        Stimulus == "blue" ~ 1L,
+        Stimulus == "red"  ~ 0L,
+        TRUE ~ NA_integer_
+      ),
+      
+      # Gorilla accuracy reconstructed from button indices
+      accuracy_recalculated = case_when(
+        Response == CorrectResponse ~ 1L,
+        
+        !is.na(Response) &
+          !is.na(CorrectResponse) ~ 0L,
+        
+        TRUE ~ NA_integer_
+      )
+    )
+  
+  # ----------------------------------------------------------
+  # Print button-code relationship
+  # ----------------------------------------------------------
+  
+  cat("\nCorrectResponse by button order and true colour:\n\n")
+  
+  print(
+    with(
+      checked_data,
+      table(
+        ResponseButtonOrder,
+        Stimulus,
+        CorrectResponse,
+        useNA = "ifany"
+      )
+    )
+  )
+  
+  # ----------------------------------------------------------
+  # Participant counts by button order
+  # ----------------------------------------------------------
+  
+  if (!is.na(id_column)) {
+    
+    participant_summary <- checked_data %>%
+      filter(!is.na(ResponseButtonOrder)) %>%
+      distinct(
+        .data[[id_column]],
+        ResponseButtonOrder
+      ) %>%
+      count(
+        ResponseButtonOrder,
+        name = "n_participants"
+      )
+    
+  } else {
+    
+    participant_summary <- tibble(
+      ResponseButtonOrder = c(0L, 1L),
+      n_participants = NA_integer_
+    )
+  }
+  
+  # ----------------------------------------------------------
+  # Trial-level feedback summary
+  # ----------------------------------------------------------
+  
+  feedback_summary <- checked_data %>%
+    filter(
+      !is.na(ResponseButtonOrder),
+      !is.na(feedback_from_stimulus)
+    ) %>%
+    group_by(ResponseButtonOrder) %>%
+    summarise(
+      n_trials = n(),
+      
+      old_agreement = mean(
+        feedback_old == feedback_from_stimulus
+      ),
+      
+      corrected_agreement = mean(
+        feedback_corrected ==
+          feedback_from_stimulus
+      ),
+      
+      n_old_incorrect = sum(
+        feedback_old != feedback_from_stimulus
+      ),
+      
+      n_changed = sum(
+        feedback_old != feedback_corrected
+      ),
+      
+      .groups = "drop"
+    ) %>%
+    left_join(
+      participant_summary,
+      by = "ResponseButtonOrder"
+    ) %>%
+    mutate(group = group_name) %>%
+    select(
+      group,
+      ResponseButtonOrder,
+      n_participants,
+      n_trials,
+      old_agreement,
+      corrected_agreement,
+      n_old_incorrect,
+      n_changed
+    )
+  
+  cat("\nFeedback validation:\n\n")
+  print(feedback_summary)
+  
+  # ----------------------------------------------------------
+  # Gorilla accuracy validation
+  # ----------------------------------------------------------
+  
+  accuracy_summary <- checked_data %>%
+    filter(
+      !is.na(Accuracy),
+      !is.na(accuracy_recalculated)
+    ) %>%
+    group_by(ResponseButtonOrder) %>%
+    summarise(
+      recorded_accuracy = mean(Accuracy),
+      
+      recalculated_accuracy = mean(
+        accuracy_recalculated
+      ),
+      
+      accuracy_agreement = mean(
+        Accuracy == accuracy_recalculated
+      ),
+      
+      .groups = "drop"
+    ) %>%
+    mutate(group = group_name)
+  
+  cat("\nGorilla accuracy validation:\n\n")
+  print(accuracy_summary)
+  
+  # ----------------------------------------------------------
+  # Strict tests
+  # ----------------------------------------------------------
+  
+  valid_feedback <- checked_data %>%
+    filter(
+      Stimulus %in% c("blue", "red"),
+      !is.na(feedback_corrected)
+    )
+  
+  valid_accuracy <- checked_data %>%
+    filter(
+      !is.na(Accuracy),
+      !is.na(accuracy_recalculated)
+    )
+  
+  feedback_pass <- all(
+    valid_feedback$feedback_corrected ==
+      valid_feedback$feedback_from_stimulus
+  )
+  
+  accuracy_pass <- all(
+    valid_accuracy$Accuracy ==
+      valid_accuracy$accuracy_recalculated
+  )
+  
+  cat("\nValidation results:\n")
+  cat(
+    "Corrected feedback matches true colour:",
+    feedback_pass,
+    "\n"
+  )
+  cat(
+    "Recorded accuracy matches button accuracy:",
+    accuracy_pass,
+    "\n"
+  )
+  
+  if (!feedback_pass) {
+    stop(
+      "Corrected feedback validation failed for ",
+      group_name
+    )
+  }
+  
+  if (!accuracy_pass) {
+    stop(
+      "Accuracy validation failed for ",
+      group_name
+    )
+  }
+  
+  cat("RESULT: ALL CHECKS PASSED FOR ", group_name, "\n")
+  
+  return(
+    list(
+      feedback = feedback_summary,
+      accuracy = accuracy_summary
+    )
+  )
+}
+
+# ============================================================
+# 3. RUN VALIDATION FOR ALL FIVE GROUPS
+# ============================================================
+
+validation_results <- imap(
+  group_files,
+  ~ validate_feedback(
+    group_name = .y,
+    filename = .x
+  )
+)
+
+# ============================================================
+# 4. COMBINE ALL GROUP RESULTS
+# ============================================================
+
+all_feedback_results <- map_dfr(
+  validation_results,
+  "feedback"
+)
+
+all_accuracy_results <- map_dfr(
+  validation_results,
+  "accuracy"
+)
+
+cat("\n\n")
+cat("============================================================\n")
+cat("FINAL FEEDBACK SUMMARY: ALL FIVE GROUPS\n")
+cat("============================================================\n\n")
+
+print(
+  all_feedback_results,
+  n = Inf
+)
+
+cat("\n")
+cat("============================================================\n")
+cat("FINAL ACCURACY SUMMARY: ALL FIVE GROUPS\n")
+cat("============================================================\n\n")
+
+print(
+  all_accuracy_results,
+  n = Inf
+)
+
+# ============================================================
+# 5. OVERALL TOTALS
+# ============================================================
+
+overall_feedback_results <- all_feedback_results %>%
+  summarise(
+    total_participants = sum(
+      n_participants,
+      na.rm = TRUE
+    ),
+    
+    total_trials = sum(n_trials),
+    
+    trials_incorrect_under_old_code = sum(
+      n_old_incorrect
+    ),
+    
+    trials_changed_by_correction = sum(
+      n_changed
+    ),
+    
+    all_corrected_feedback_valid =
+      all(corrected_agreement == 1)
+  )
+
+cat("\n")
+cat("============================================================\n")
+cat("OVERALL EFFECT OF THE CORRECTION\n")
+cat("============================================================\n\n")
+
+print(overall_feedback_results)
+
+# Final automated requirement:
+stopifnot(
+  all(
+    all_feedback_results$corrected_agreement == 1
+  ),
+  all(
+    all_accuracy_results$accuracy_agreement == 1
+  )
+)
+
+cat("\nALL FIVE GROUPS PASSED ALL VALIDATION CHECKS.\n")
