@@ -1,6 +1,15 @@
-# =====================================================================
-# EXPORT y_pred FOR BEHAVIOURAL POSTERIOR PREDICTIVE CHECKS
-# =====================================================================
+
+# BEHAVIOURAL POSTERIOR PREDICTIVE CHECKS
+#
+# Models: Learning, Local eta, Learning + local eta,
+# 2 channels, Local eta + 2 channels
+#
+#   1. Accuracy
+#   2. Overall PSE
+#   3. PSE trajectory
+#   4. Reliability-specific evidence integration
+
+
 
 rm(list = ls(all.names = TRUE))
 
@@ -10,7 +19,7 @@ library(tidyverse)
 
 
 # ---------------------------------------------------------------------
-# 1. Settings
+# 1. SETTINGS
 # ---------------------------------------------------------------------
 
 project_root <- path.expand(
@@ -22,248 +31,697 @@ fit_root <- file.path(
   "stan/results/fits/exp11_unaware"
 )
 
-output_root <- file.path(
-  project_root,
-  "stan/results/predictions/behavioural_ppc"
-)
-
-n_ppc_draws <- 200
-
-if (!dir.exists(output_root)) {
-  dir.create(
-    output_root,
-    recursive = TRUE
-  )
-}
+MIN_TRIALS_PER_BIN <- 3
+ROLLING_WINDOW <- 50
+N_PPC_DRAWS <- 200
+N_TRAJECTORY_DRAWS <- 20  # Rolling-window fits are computationally expensive.
+TRAJECTORY_STEP <- 10      # Model curves at every tenth trial; observed at every trial.
 
 
 # ---------------------------------------------------------------------
-# 2. Files for the five groups
+# 2. GROUP INFORMATION
 # ---------------------------------------------------------------------
 
-group_files <- tribble(
-  ~group, ~safe_name, ~data_file, ~fit_file,
+groups <- tribble(
+  ~group, ~safe, ~data_file, ~order_col, ~prior_col, ~fit_suffix,
   
   "Implicit Unaware",
   "implicit_unaware",
-  file.path(project_root, "data/DATA_Unaware_Exp11.csv"),
-  file.path(fit_root, "fit_trunc_boost_model_unaware_exp11.rdata"),
+  "data/DATA_Unaware_Exp11.csv",
+  "ResponseButtonOrder",
+  "Prior_Belief",
+  "unaware_exp11",
   
   "Implicit Aware",
   "implicit_aware",
-  file.path(project_root, "data/DATA_Aware_Exp11.csv"),
-  file.path(fit_root, "fit_trunc_boost_model_aware_exp11.rdata"),
+  "data/DATA_Aware_Exp11.csv",
+  "ResponseButtonOrder",
+  "Prior_Belief",
+  "aware_exp11",
   
   "Explicit Undirected",
   "explicit_undirected",
-  file.path(project_root, "data/DATA_Aware_Exp12.csv"),
-  file.path(fit_root, "fit_trunc_boost_model_aware_exp12.rdata"),
+  "data/DATA_Aware_Exp12.csv",
+  "Manipulation_ResponseButtonOrder",
+  "Prior_Belief",
+  "aware_exp12",
   
   "Explicit True",
   "explicit_true",
-  file.path(project_root, "data/data_priorbelief_truthful_exp13.csv"),
-  file.path(fit_root, "fit_trunc_boost_truthful_exp13.rdata"),
+  "data/data_priorbelief_truthful_exp13.csv",
+  "ResponseButtonOrder",
+  "TruePrior",
+  "truthful_exp13",
   
   "Explicit Deceptive",
   "explicit_deceptive",
-  file.path(project_root, "data/data_priorbelief_deceptive_exp13.csv"),
-  file.path(fit_root, "fit_trunc_boost_deceptive_exp13.rdata")
+  "data/data_priorbelief_deceptive_exp13.csv",
+  "ResponseButtonOrder",
+  "TruePrior",
+  "deceptive_exp13"
+) %>%
+  mutate(
+    data_file = file.path(
+      project_root,
+      data_file
+    )
+  )
+
+
+group_levels <- groups$group
+
+
+# ---------------------------------------------------------------------
+# 3. MODEL INFORMATION
+# ---------------------------------------------------------------------
+
+models <- tribble(
+  ~model, ~file_prefix, ~model_colour,
+  "Learning", "learning", "#CC79A7",
+  "Local eta", "localeta", "#0072B2",
+  "Learning + local eta", "learning_localeta", "#D55E00",
+  "2 channels", "2channels", "#E69F00",
+  "Local eta + 2 channels", "leta_2channels", "#009E73"
+)
+
+model_levels <- models$model
+
+model_cols <- setNames(
+  models$model_colour,
+  models$model
+)
+
+
+# Reliability is shown by line type.
+reliability_linetypes <- c(
+  "50%" = "dotted",
+  "55%" = "dashed",
+  "65%" = "solid"
 )
 
 
 # ---------------------------------------------------------------------
-# 3. Validate required files
+# 4. NORMALISE PRIOR CODING
 # ---------------------------------------------------------------------
 
-missing_files <- c(
-  group_files$data_file[!file.exists(group_files$data_file)],
-  group_files$fit_file[!file.exists(group_files$fit_file)]
-)
-
-if (length(missing_files) > 0) {
-  stop(
-    paste(
-      "The following files could not be found:",
-      paste(missing_files, collapse = "\n"),
-      sep = "\n"
+normalise_prior <- function(x) {
+  
+  z <- tolower(
+    as.character(x)
+  )
+  
+  case_when(
+    
+    z %in% c(
+      "1",
+      "blue",
+      "b",
+      "65_blue",
+      "blueprior"
+    ) ~ 1L,
+    
+    z %in% c(
+      "2",
+      "red",
+      "r",
+      "65_red",
+      "redprior"
+    ) ~ 2L,
+    
+    str_detect(
+      z,
+      "blue"
+    ) ~ 1L,
+    
+    str_detect(
+      z,
+      "red"
+    ) ~ 2L,
+    
+    TRUE ~ suppressWarnings(
+      as.integer(z)
     )
   )
 }
 
 
 # ---------------------------------------------------------------------
-# 4. Export one group
+# 5. EXTRACT SAMPLE COLOURS AND RELIABILITIES
 # ---------------------------------------------------------------------
 
-export_group <- function(
-    group_name,
-    safe_name,
-    data_file,
-    fit_file,
-    n_requested_draws
-) {
+extract_samples <- function(d) {
   
-  cat("\n============================================================\n")
-  cat("GROUP: ", group_name, "\n", sep = "")
-  cat("============================================================\n")
+  n <- nrow(d)
   
-  # Read the behavioural data.
-  behavioural_data <- readr::read_csv(
-    data_file,
+  cols <- matrix(
+    NA_character_,
+    n,
+    6
+  )
+  
+  rels <- matrix(
+    NA_real_,
+    n,
+    6
+  )
+  
+  
+  # Newer files:
+  # color_1 ... color_6
+  # proba_1 ... proba_6
+  
+  if (
+    all(
+      paste0(
+        "color_",
+        1:6
+      ) %in% names(d)
+    ) &&
+    all(
+      paste0(
+        "proba_",
+        1:6
+      ) %in% names(d)
+    )
+  ) {
+    
+    cols <- as.matrix(
+      d[
+        paste0(
+          "color_",
+          1:6
+        )
+      ]
+    )
+    
+    rels <- apply(
+      d[
+        paste0(
+          "proba_",
+          1:6
+        )
+      ],
+      2,
+      as.numeric
+    )
+    
+    
+    # Some Exp13 files contain
+    # 50 / 55 / 65 instead of
+    # .50 / .55 / .65
+    
+    rels[
+      rels > 1
+    ] <- rels[
+      rels > 1
+    ] / 100
+    
+    
+  } else {
+    
+    # Older files:
+    # Sample_Color
+    # Sample_Reliability
+    
+    for (i in seq_len(n)) {
+      
+      cs <- str_extract_all(
+        tolower(
+          as.character(
+            d$Sample_Color[i]
+          )
+        ),
+        "blue|red"
+      )[[1]]
+      
+      
+      rs <- suppressWarnings(
+        as.numeric(
+          str_extract_all(
+            as.character(
+              d$Sample_Reliability[i]
+            ),
+            "[0-9]+(?:\\.[0-9]+)?"
+          )[[1]]
+        )
+      )
+      
+      
+      rs[
+        rs > 1
+      ] <- rs[
+        rs > 1
+      ] / 100
+      
+      
+      if (length(cs)) {
+        
+        cols[
+          i,
+          seq_len(
+            min(
+              6,
+              length(cs)
+            )
+          )
+        ] <- cs[
+          seq_len(
+            min(
+              6,
+              length(cs)
+            )
+          )
+        ]
+      }
+      
+      
+      if (length(rs)) {
+        
+        rels[
+          i,
+          seq_len(
+            min(
+              6,
+              length(rs)
+            )
+          )
+        ] <- rs[
+          seq_len(
+            min(
+              6,
+              length(rs)
+            )
+          )
+        ]
+      }
+    }
+  }
+  
+  
+  list(
+    colour = tolower(cols),
+    reliability = rels
+  )
+}
+
+
+# ---------------------------------------------------------------------
+# 6. ADD EVIDENCE VARIABLES
+# ---------------------------------------------------------------------
+
+add_evidence <- function(d) {
+  
+  s <- extract_samples(d)
+  
+  
+  # Neutral Bayesian probability
+  # that Blue is correct.
+  #
+  # This uses a 0.5 / 0.5 prior.
+  
+  rb <- ifelse(
+    s$colour == "blue",
+    s$reliability,
+    1 - s$reliability
+  )
+  
+  
+  rr <- ifelse(
+    s$colour == "red",
+    s$reliability,
+    1 - s$reliability
+  )
+  
+  
+  rb[
+    is.na(rb)
+  ] <- 0.5
+  
+  rr[
+    is.na(rr)
+  ] <- 0.5
+  
+  
+  rb <- pmin(
+    pmax(
+      rb,
+      1e-8
+    ),
+    1 - 1e-8
+  )
+  
+  
+  rr <- pmin(
+    pmax(
+      rr,
+      1e-8
+    ),
+    1 - 1e-8
+  )
+  
+  
+  d$neutral_blue_probability <- plogis(
+    rowSums(
+      log(
+        rb / rr
+      )
+    )
+  )
+  
+  
+  # Net number of samples favouring Blue
+  # at each reliability level.
+  
+  for (r in c(
+    .50,
+    .55,
+    .65
+  )) {
+    
+    keep <- abs(
+      s$reliability - r
+    ) < 1e-6
+    
+    
+    blue <- rowSums(
+      keep &
+        s$colour == "blue",
+      na.rm = TRUE
+    )
+    
+    
+    red <- rowSums(
+      keep &
+        s$colour == "red",
+      na.rm = TRUE
+    )
+    
+    
+    d[[
+      paste0(
+        "x",
+        as.integer(
+          r * 100
+        )
+      )
+    ]] <- blue - red
+  }
+  
+  
+  d
+}
+
+
+# ---------------------------------------------------------------------
+# 7. PREPARE BEHAVIOURAL DATA
+# ---------------------------------------------------------------------
+
+prepare_group <- function(info) {
+  
+  d <- read_csv(
+    info$data_file,
     show_col_types = FALSE,
     progress = FALSE
   )
   
-  required_columns <- c(
-    "ParticipantPrivateID",
-    "TrialNumber"
+  
+  id_order <- unique(
+    d$ParticipantPrivateID
   )
   
-  missing_columns <- setdiff(
-    required_columns,
-    names(behavioural_data)
-  )
   
-  if (length(missing_columns) > 0) {
-    stop(
-      paste0(
-        "Missing columns in ",
-        data_file,
-        ":\n",
-        paste(missing_columns, collapse = "\n")
-      )
-    )
-  }
-  
-  # Preserve the original participant order used to prepare the model.
-  participant_order <- unique(
-    behavioural_data$ParticipantPrivateID
-  )
-  
-  manifest <- behavioural_data %>%
+  d <- d %>%
     mutate(
+      
       subject_index = match(
         ParticipantPrivateID,
-        participant_order
+        id_order
       ),
-      trial = as.integer(TrialNumber)
+      
+      trial = as.integer(
+        TrialNumber
+      ),
+      
+      order = as.integer(
+        .data[[
+          info$order_col
+        ]]
+      ),
+      
+      
+      # Correct colour mapping:
+      #
+      # RBO = 1:
+      #   Response 1 = Blue
+      #   Response 0 = Red
+      #
+      # RBO = 0:
+      #   Response 0 = Blue
+      #   Response 1 = Red
+      
+      observed_choice = if_else(
+        as.integer(Response) == order,
+        1L,
+        2L
+      ),
+      
+      
+      prior = normalise_prior(
+        .data[[
+          info$prior_col
+        ]]
+      )
     ) %>%
+    
     arrange(
       subject_index,
       trial
-    ) %>%
-    transmute(
-      column_position = row_number(),
-      group = group_name,
-      subject_index,
-      participant_id = as.character(
-        ParticipantPrivateID
+    )
+  
+  
+  d <- add_evidence(d)
+  
+  
+  d <- d %>%
+    mutate(
+      
+      # Did the participant choose
+      # the true base-rate colour?
+      
+      observed_prior_choice = as.integer(
+        observed_choice == prior
       ),
-      trial
+      
+      # CorrectResponse uses the same response-button coding as Response.
+      correct_colour = if_else(
+        as.integer(CorrectResponse) == order,
+        1L,
+        2L
+      ),
+      
+      # Evidence probability aligned to the true base-rate colour.
+      evidence_prior = if_else(
+        prior == 1L,
+        neutral_blue_probability,
+        1 - neutral_blue_probability
+      ),
+      
+      
+      # Align evidence with the
+      # true base-rate colour.
+      
+      x50_prior = if_else(
+        prior == 1,
+        x50,
+        -x50
+      ),
+      
+      x55_prior = if_else(
+        prior == 1,
+        x55,
+        -x55
+      ),
+      
+      x65_prior = if_else(
+        prior == 1,
+        x65,
+        -x65
+      )
     )
   
-  if (anyDuplicated(
-    manifest[c("subject_index", "trial")]
-  )) {
+  
+  list(
+    info = info,
+    data = d
+  )
+}
+
+
+behavioural_objects <- lapply(
+  seq_len(
+    nrow(groups)
+  ),
+  function(i) {
+    
+    prepare_group(
+      groups[i, ]
+    )
+  }
+)
+
+
+# ---------------------------------------------------------------------
+# 8. LOAD y_pred FROM ONE MODEL
+# ---------------------------------------------------------------------
+
+load_model_predictions <- function(
+    behavioural_object,
+    model_info,
+    n_requested_draws = 200
+) {
+  
+  info <- behavioural_object$info
+  d <- behavioural_object$data
+  
+  
+  fit_file <- file.path(
+    fit_root,
+    paste0(
+      model_info$file_prefix,
+      "_",
+      info$fit_suffix,
+      ".rdata"
+    )
+  )
+  
+  
+  if (!file.exists(fit_file)) {
+    
     stop(
       paste0(
-        "Duplicate participant/trial combinations found for ",
-        group_name,
-        "."
+        "\nCould not find model file:\n",
+        fit_file
       )
     )
   }
   
-  rows_per_subject <- manifest %>%
-    count(
-      subject_index,
-      name = "n_trials"
-    )
   
-  if (any(rows_per_subject$n_trials != 240)) {
-    stop(
-      paste0(
-        "At least one participant in ",
-        group_name,
-        " does not have exactly 240 trials."
-      )
-    )
-  }
+  cat(
+    "\nLoading:\n",
+    fit_file,
+    "\n"
+  )
   
-  # Load the CmdStanR fit.
+  
   fit_environment <- new.env(
     parent = emptyenv()
   )
+  
   
   loaded_objects <- load(
     fit_file,
     envir = fit_environment
   )
   
+  
   if (!"fit" %in% loaded_objects) {
+    
     stop(
       paste0(
-        "No object named 'fit' was found for ",
-        group_name,
-        "."
+        "\nNo object named 'fit' in:\n",
+        fit_file
       )
     )
   }
+  
   
   current_fit <- fit_environment$fit
   
-  if (!inherits(current_fit, "CmdStanMCMC")) {
+  
+  if (!inherits(
+    current_fit,
+    "CmdStanMCMC"
+  )) {
+    
     stop(
       paste0(
-        "The saved fit for ",
-        group_name,
-        " is not a CmdStanMCMC object."
+        "\nThe fit in this file is not a CmdStanMCMC object:\n",
+        fit_file
       )
     )
   }
   
-  # Extract all posterior predictive choices.
+  
+  # -------------------------------------------------
+  # Extract posterior predictive responses
+  # -------------------------------------------------
+  
   y_pred <- current_fit$draws(
     variables = "y_pred",
     format = "draws_matrix"
   )
   
-  if (!all(
-    unique(as.vector(y_pred)) %in% c(1, 2)
-  )) {
+  
+  if (
+    !all(
+      unique(
+        as.vector(y_pred)
+      ) %in% c(
+        1,
+        2
+      )
+    )
+  ) {
+    
     stop(
       paste0(
-        "y_pred for ",
-        group_name,
-        " contains values other than 1 and 2."
+        "\ny_pred contains values other than 1 and 2 in:\n",
+        fit_file
       )
     )
   }
   
-  # Match y_pred columns to the participant/trial manifest.
+  
+  # -------------------------------------------------
+  # Match y_pred columns exactly to behavioural rows
+  # -------------------------------------------------
+  
   expected_names <- paste0(
     "y_pred[",
-    manifest$subject_index,
+    d$subject_index,
     ",",
-    manifest$trial,
+    d$trial,
     "]"
   )
+  
   
   column_match <- match(
     expected_names,
     colnames(y_pred)
   )
   
+  
   if (anyNA(column_match)) {
+    
+    first_missing <- expected_names[
+      which(
+        is.na(column_match)
+      )[1]
+    ]
+    
+    
     stop(
       paste0(
-        "Not all y_pred columns could be matched for ",
-        group_name,
-        ". First missing variable: ",
-        expected_names[which(is.na(column_match))[1]]
+        "\nCould not match all predictions for:\n",
+        model_info$model,
+        " / ",
+        info$group,
+        "\n\nFirst missing variable:\n",
+        first_missing
       )
     )
   }
+  
   
   y_pred <- y_pred[
     ,
@@ -271,13 +729,21 @@ export_group <- function(
     drop = FALSE
   ]
   
-  # Select evenly spaced draws across the full posterior.
-  n_available_draws <- nrow(y_pred)
+  
+  # -------------------------------------------------
+  # Keep evenly spaced posterior draws
+  # -------------------------------------------------
+  
+  n_available_draws <- nrow(
+    y_pred
+  )
+  
   
   n_selected_draws <- min(
     n_requested_draws,
     n_available_draws
   )
+  
   
   selected_draw_rows <- unique(
     as.integer(
@@ -291,569 +757,767 @@ export_group <- function(
     )
   )
   
-  selected_y_pred <- y_pred[
+  
+  y_pred <- y_pred[
     selected_draw_rows,
     ,
     drop = FALSE
   ]
   
-  # Save only the numeric prediction matrix.
-  #
-  # Rows = posterior draws
-  # Columns = observations listed in the manifest
-  prediction_file <- file.path(
-    output_root,
-    paste0(
-      "y_pred_",
-      safe_name,
-      "_200_draws.csv"
-    )
-  )
   
-  readr::write_csv(
-    as.data.frame(selected_y_pred),
-    prediction_file
+  list(
+    group = info$group,
+    model = model_info$model,
+    data = d,
+    pred = y_pred,
+    fit_file = fit_file
   )
-  
-  # Save the manifest that defines every prediction column.
-  manifest_file <- file.path(
-    output_root,
-    paste0(
-      "manifest_",
-      safe_name,
-      ".csv"
-    )
+}
+
+
+# ---------------------------------------------------------------------
+# 9. LOAD AVAILABLE MODELS FOR ALL FIVE GROUPS
+# ---------------------------------------------------------------------
+
+model_objects <- list()
+
+counter <- 1
+
+
+for (g in seq_len(
+  length(
+    behavioural_objects
   )
+)) {
   
-  readr::write_csv(
-    manifest,
-    manifest_file
-  )
+  for (m in seq_len(
+    nrow(models)
+  )) {
+    
+    # No standalone Learning fit is present for Exp13.
+    if (models$model[m] == "Learning" && g >= 4) next
+    
+    model_objects[[counter]] <-
+      load_model_predictions(
+        behavioural_object =
+          behavioural_objects[[g]],
+        
+        model_info =
+          models[m, ],
+        
+        n_requested_draws =
+          N_PPC_DRAWS
+      )
+    
+    
+    counter <- counter + 1
+  }
+}
+
+
+cat(
+  "\n============================================================\n"
+)
+
+cat(
+  "ALL MODEL PREDICTIONS LOADED\n"
+)
+
+cat(
+  "============================================================\n"
+)
+
+
+# =====================================================================
+# 10. RELIABILITY-SPECIFIC EVIDENCE INTEGRATION
+# =====================================================================
+
+
+evidence_one <- function(
+    d,
+    choice,
+    group_name,
+    model_name = NA_character_,
+    draw = NA_integer_
+) {
   
-  # Save which rows of the full posterior were retained.
-  draw_file <- file.path(
-    output_root,
-    paste0(
-      "selected_draws_",
-      safe_name,
-      ".csv"
-    )
-  )
-  
-  draw_manifest <- tibble(
-    exported_draw = seq_along(
-      selected_draw_rows
+  map_dfr(
+    c(
+      "50",
+      "55",
+      "65"
     ),
-    full_posterior_draw_row =
-      selected_draw_rows
-  )
-  
-  readr::write_csv(
-    draw_manifest,
-    draw_file
-  )
-  
-  cat("Participants: ", length(participant_order), "\n", sep = "")
-  cat("Trials per participant: 240\n")
-  cat("Available posterior draws: ", n_available_draws, "\n", sep = "")
-  cat("Exported posterior draws: ", nrow(selected_y_pred), "\n", sep = "")
-  cat("Prediction columns: ", ncol(selected_y_pred), "\n", sep = "")
-  
-  cat("\nSaved predictions:\n")
-  cat(prediction_file, "\n")
-  
-  cat("\nSaved manifest:\n")
-  cat(manifest_file, "\n")
-  
-  invisible(
-    tibble(
-      group = group_name,
-      participants = length(participant_order),
-      trials_per_participant = 240L,
-      observations = ncol(selected_y_pred),
-      available_draws = n_available_draws,
-      exported_draws = nrow(selected_y_pred),
-      prediction_file,
-      manifest_file
-    )
-  )
-}
-
-
-# ---------------------------------------------------------------------
-# 5. Export all five groups
-# ---------------------------------------------------------------------
-
-export_summary <- vector(
-  mode = "list",
-  length = nrow(group_files)
-)
-
-for (i in seq_len(nrow(group_files))) {
-  
-  export_summary[[i]] <- export_group(
-    group_name = group_files$group[i],
-    safe_name = group_files$safe_name[i],
-    data_file = group_files$data_file[i],
-    fit_file = group_files$fit_file[i],
-    n_requested_draws = n_ppc_draws
-  )
-}
-
-export_summary <- bind_rows(
-  export_summary
-)
-
-
-# ---------------------------------------------------------------------
-# 6. Save and print the export summary
-# ---------------------------------------------------------------------
-
-readr::write_csv(
-  export_summary,
-  file.path(
-    output_root,
-    "behavioural_ppc_export_summary.csv"
-  )
-)
-
-cat("\n============================================================\n")
-cat("BEHAVIOURAL PPC EXPORT COMPLETED\n")
-cat("============================================================\n\n")
-
-print(
-  export_summary,
-  n = Inf
-)
-
-cat("\nFiles saved in:\n")
-cat(output_root, "\n")]
-
-
-
-
-
-
-
-
-# SIMPLE BEHAVIOURAL POSTERIOR PREDICTIVE CHECKS
-# Produces: accuracy, base-rate-aligned choice over trials, and evidence curves.
-
-rm(list = ls(all.names = TRUE))
-
-library(tidyverse)
-
-project_root <- path.expand("~/Documents/GitHub/reliable_info_bias")
-prediction_root <- file.path(project_root, "stan/results/predictions/behavioural_ppc")
-output_root <- file.path(prediction_root, "simple_ppc_plots")
-dir.create(output_root, recursive = TRUE, showWarnings = FALSE)
-
-MIN_TRIALS_PER_BIN <- 3
-ROLLING_WINDOW <- 50
-
-groups <- tribble(
-  ~group, ~safe, ~data_file, ~order_col, ~prior_col,
-  "Implicit Unaware", "implicit_unaware", "data/DATA_Unaware_Exp11.csv", "ResponseButtonOrder", "Prior_Belief",
-  "Implicit Aware", "implicit_aware", "data/DATA_Aware_Exp11.csv", "ResponseButtonOrder", "Prior_Belief",
-  "Explicit Undirected", "explicit_undirected", "data/DATA_Aware_Exp12.csv", "Manipulation_ResponseButtonOrder", "Prior_Belief",
-  "Explicit True", "explicit_true", "data/data_priorbelief_truthful_exp13.csv", "ResponseButtonOrder", "TruePrior",
-  "Explicit Deceptive", "explicit_deceptive", "data/data_priorbelief_deceptive_exp13.csv", "ResponseButtonOrder", "TruePrior"
-) %>% mutate(data_file = file.path(project_root, data_file))
-
-group_levels <- groups$group
-group_cols <- c(
-  "Implicit Unaware" = "#F28E8E", "Implicit Aware" = "#8FD18F",
-  "Explicit Undirected" = "#E58C22", "Explicit True" = "#087A3E",
-  "Explicit Deceptive" = "#A51F1F"
-)
-rel_cols <- c(`50%` = "#0072B2", `55%` = "#D55E00", `65%` = "#7B3294")
-
-normalise_prior <- function(x) {
-  z <- tolower(as.character(x))
-  case_when(
-    z %in% c("1", "blue", "b", "65_blue", "blueprior") ~ 1L,
-    z %in% c("2", "red", "r", "65_red", "redprior") ~ 2L,
-    str_detect(z, "blue") ~ 1L,
-    str_detect(z, "red") ~ 2L,
-    TRUE ~ suppressWarnings(as.integer(z))
-  )
-}
-
-# Extract six sample colours and reliabilities. Newer files contain color_1...
-# and proba_1...; older files contain string representations in Sample_*.
-extract_samples <- function(d) {
-  n <- nrow(d)
-  cols <- matrix(NA_character_, n, 6)
-  rels <- matrix(NA_real_, n, 6)
-  if (all(paste0("color_", 1:6) %in% names(d)) &&
-      all(paste0("proba_", 1:6) %in% names(d))) {
-    cols <- as.matrix(d[paste0("color_", 1:6)])
-    rels <- apply(d[paste0("proba_", 1:6)], 2, as.numeric)
-    # Exp13 files may store reliability as 50/55/65 rather than
-    # 0.50/0.55/0.65.
-    rels[rels > 1] <- rels[rels > 1] / 100
-  } else {
-    for (i in seq_len(n)) {
-      cs <- str_extract_all(tolower(as.character(d$Sample_Color[i])), "blue|red")[[1]]
-      rs <- suppressWarnings(as.numeric(str_extract_all(
-        as.character(d$Sample_Reliability[i]), "[0-9]+(?:\\.[0-9]+)?")[[1]]))
-      rs[rs > 1] <- rs[rs > 1] / 100
-      if (length(cs)) cols[i, seq_len(min(6, length(cs)))] <- cs[seq_len(min(6, length(cs)))]
-      if (length(rs)) rels[i, seq_len(min(6, length(rs)))] <- rs[seq_len(min(6, length(rs)))]
+    function(rr) {
+      
+      xcol <- paste0(
+        "x",
+        rr,
+        "_prior"
+      )
+      
+      
+      tibble(
+        
+        subject =
+          d$subject_index,
+        
+        x =
+          d[[xcol]],
+        
+        y =
+          as.integer(
+            choice == d$prior
+          )
+      ) %>%
+        
+        group_by(
+          subject,
+          x
+        ) %>%
+        
+        summarise(
+          
+          n = n(),
+          
+          p = mean(
+            y
+          ),
+          
+          .groups = "drop"
+        ) %>%
+        
+        filter(
+          n >= MIN_TRIALS_PER_BIN
+        ) %>%
+        
+        group_by(
+          x
+        ) %>%
+        
+        summarise(
+          
+          value = mean(
+            p,
+            na.rm = TRUE
+          ),
+          
+          se = sd(
+            p,
+            na.rm = TRUE
+          ) /
+            sqrt(
+              sum(
+                is.finite(p)
+              )
+            ),
+          
+          .groups = "drop"
+        ) %>%
+        
+        mutate(
+          reliability = paste0(
+            rr,
+            "%"
+          )
+        )
     }
+  ) %>%
+    
+    mutate(
+      group = group_name,
+      model = model_name,
+      draw = draw
+    )
+}
+
+
+# ---------------------------------------------------------------------
+# Behavioural evidence curves
+# ---------------------------------------------------------------------
+
+observed_ev <- map_dfr(
+  behavioural_objects,
+  function(o) {
+    
+    evidence_one(
+      d = o$data,
+      choice = o$data$observed_choice,
+      group_name = o$info$group
+    )
   }
-  list(colour = tolower(cols), reliability = rels)
-}
+)
 
-add_evidence <- function(d) {
-  s <- extract_samples(d)
-  # Neutral Bayesian probability that Blue is correct, using a 0.5/0.5
-  # prior and the stated reliability of every sample.
-  rb <- ifelse(s$colour == "blue", s$reliability, 1 - s$reliability)
-  rr <- ifelse(s$colour == "red",  s$reliability, 1 - s$reliability)
-  rb[is.na(rb)] <- 0.5
-  rr[is.na(rr)] <- 0.5
-  rb <- pmin(pmax(rb, 1e-8), 1 - 1e-8)
-  rr <- pmin(pmax(rr, 1e-8), 1 - 1e-8)
-  d$neutral_blue_probability <- plogis(rowSums(log(rb / rr)))
-  for (r in c(.50, .55, .65)) {
-    keep <- abs(s$reliability - r) < 1e-6
-    blue <- rowSums(keep & s$colour == "blue", na.rm = TRUE)
-    red  <- rowSums(keep & s$colour == "red", na.rm = TRUE)
-    d[[paste0("x", as.integer(r * 100))]] <- blue - red
+
+# ---------------------------------------------------------------------
+# Model evidence curves
+# ---------------------------------------------------------------------
+
+pred_ev <- map_dfr(
+  model_objects,
+  function(o) {
+    
+    map_dfr(
+      seq_len(
+        nrow(
+          o$pred
+        )
+      ),
+      function(k) {
+        
+        evidence_one(
+          d = o$data,
+          choice = o$pred[k, ],
+          group_name = o$group,
+          model_name = o$model,
+          draw = k
+        )
+      }
+    )
   }
-  d
-}
+)
 
-prepare_group <- function(info) {
-  d <- read_csv(info$data_file, show_col_types = FALSE, progress = FALSE)
-  id_order <- unique(d$ParticipantPrivateID)
-  d <- d %>% mutate(
-    subject_index = match(ParticipantPrivateID, id_order),
-    trial = as.integer(TrialNumber),
-    order = as.integer(.data[[info$order_col]]),
-    observed_choice = if_else(as.integer(Response) == order, 1L, 2L),
-    correct_category = if_else(as.integer(CorrectResponse) == order, 1L, 2L),
-    prior = normalise_prior(.data[[info$prior_col]])
-  ) %>% arrange(subject_index, trial)
-  d <- add_evidence(d) %>% mutate(
-    observed_prior_choice = as.integer(observed_choice == prior),
-    prior_colour = if_else(prior == 1, "Blue prior", "Red prior"),
-    x50_prior = if_else(prior == 1, x50, -x50),
-    x55_prior = if_else(prior == 1, x55, -x55),
-    x65_prior = if_else(prior == 1, x65, -x65)
+
+# ---------------------------------------------------------------------
+# Posterior predictive intervals
+# ---------------------------------------------------------------------
+
+pred_ev_band <- pred_ev %>%
+  
+  group_by(
+    group,
+    model,
+    reliability,
+    x
+  ) %>%
+  
+  summarise(
+    
+    mean = mean(
+      value,
+      na.rm = TRUE
+    ),
+    
+    lo = quantile(
+      value,
+      .025,
+      na.rm = TRUE
+    ),
+    
+    hi = quantile(
+      value,
+      .975,
+      na.rm = TRUE
+    ),
+    
+    .groups = "drop"
   )
-  pred_file <- file.path(prediction_root, paste0("y_pred_", info$safe, "_200_draws.csv"))
-  manifest_file <- file.path(prediction_root, paste0("manifest_", info$safe, ".csv"))
-  stopifnot(file.exists(pred_file), file.exists(manifest_file))
-  manifest <- read_csv(manifest_file, show_col_types = FALSE)
-  pred <- as.matrix(read_csv(pred_file, show_col_types = FALSE, progress = FALSE))
-  key_d <- paste(d$subject_index, d$trial)
-  key_m <- paste(manifest$subject_index, manifest$trial)
-  ord <- match(key_d, key_m)
-  if (anyNA(ord)) stop("Prediction manifest failed to match for ", info$group)
-  pred <- pred[, ord, drop = FALSE]
-  if (!all(pred %in% c(1, 2))) stop("Predictions are not coded 1/2 for ", info$group)
-  list(info = info, data = d, pred = pred)
-}
 
-objects <- lapply(seq_len(nrow(groups)), function(i) prepare_group(groups[i, ]))
 
-# 1. ACCURACY -----------------------------------------------------------
-observed_accuracy <- map_dfr(objects, function(o) o$data %>%
-                               group_by(subject_index) %>% summarise(value = mean(observed_choice == correct_category), .groups="drop") %>%
-                               mutate(group = o$info$group))
-
-pred_accuracy <- map_dfr(objects, function(o) {
-  correct <- o$data$correct_category
-  vals <- vapply(seq_len(nrow(o$pred)), function(k) mean(o$pred[k, ] == correct), numeric(1))
-  tibble(group=o$info$group, draw=seq_along(vals), value=vals)
-})
-
-acc_intervals <- pred_accuracy %>% group_by(group) %>% summarise(
-  mean=mean(value), lo=quantile(value,.025), hi=quantile(value,.975), .groups="drop")
-
-p_accuracy <- ggplot(observed_accuracy, aes(group, 100*value, colour=group)) +
-  geom_jitter(width=.13, height=0, alpha=.75, size=2) +
-  geom_errorbar(
-    data=acc_intervals,
-    aes(x=group, ymin=100*lo, ymax=100*hi, colour=group),
-    inherit.aes=FALSE,
-    width=.16,
-    linewidth=1.1
-  ) +
-  geom_point(
-    data=acc_intervals,
-    aes(x=group, y=100*mean, colour=group),
-    inherit.aes=FALSE,
-    shape=21,
-    fill="white",
-    size=3.5,
-    stroke=1.1
-  ) +
-  geom_hline(yintercept=50, linetype="dashed", colour="grey50") +
-  scale_colour_manual(values=group_cols) + coord_cartesian(ylim=c(40,80)) +
-  labs(x=NULL,y="Accuracy (%)",title="Observed accuracy and posterior-predicted group means",
-       subtitle="Dots are observed participants; open points and bars are predicted means and 95% intervals") +
-  theme_classic(base_size=12) + theme(legend.position="none",axis.text.x=element_text(angle=25,hjust=1))
-
-# 2. BASE-RATE-ALIGNED CHOICE OVER TRIALS -------------------------------
-roll_mean <- function(x, width=50) as.numeric(stats::filter(x, rep(1/width,width), sides=1))
-
-observed_time <- map_dfr(objects, function(o) o$data %>% group_by(subject_index,prior_colour) %>%
-                           arrange(trial,.by_group=TRUE) %>% mutate(value=roll_mean(observed_prior_choice,ROLLING_WINDOW)) %>%
-                           filter(!is.na(value)) %>% ungroup() %>% group_by(prior_colour,trial) %>%
-                           summarise(mean=mean(value),.groups="drop") %>%
-                           mutate(group=o$info$group))
-
-pred_time <- map_dfr(objects, function(o) {
-  d <- o$data; keep_trials <- seq(50,240,by=10)
-  map_dfr(seq_len(nrow(o$pred)), function(k) {
-    z <- d %>% mutate(pc=as.integer(o$pred[k, ] == prior)) %>% group_by(subject_index,prior_colour) %>%
-      arrange(trial,.by_group=TRUE) %>% mutate(value=roll_mean(pc,ROLLING_WINDOW)) %>% ungroup() %>%
-      filter(trial %in% keep_trials) %>% group_by(prior_colour,trial) %>%
-      summarise(value=mean(value,na.rm=TRUE),.groups="drop")
-    z$draw <- k; z
-  }) %>% mutate(group=o$info$group)
-})
-
-pred_time_band <- pred_time %>% group_by(group,prior_colour,trial) %>% summarise(
-  mean=mean(value),lo=quantile(value,.025),hi=quantile(value,.975),.groups="drop")
-
-p_time <- ggplot() +
-  geom_ribbon(data=pred_time_band,aes(trial,ymin=lo,ymax=hi,fill=prior_colour),alpha=.18) +
-  geom_line(data=pred_time_band,aes(trial,mean,colour=prior_colour),linetype="dashed",linewidth=.9) +
-  geom_line(data=observed_time,aes(trial,mean,colour=prior_colour),linewidth=1) +
-  facet_wrap(~factor(group,levels=group_levels),nrow=1) +
-  geom_hline(yintercept=.5,linetype="dashed",colour="grey55") +
-  scale_colour_manual(values=c("Blue prior"="#0072B2","Red prior"="#D94F16")) +
-  scale_fill_manual(values=c("Blue prior"="#0072B2","Red prior"="#D94F16")) +
-  coord_cartesian(ylim=c(.35,.75)) +
-  labs(x="Trial",y="Proportion choosing true base-rate colour",
-       title="Base-rate-aligned choices over trials",
-       subtitle="Solid = observed; dashed and shaded = predicted mean and 95% interval") +
-  theme_classic(base_size=11) + theme(legend.position="bottom")
-
-# 3. RELIABILITY-SPECIFIC EVIDENCE CURVES -------------------------------
-
-evidence_one <- function(d, choice, group_name, draw=NA_integer_) {
-  map_dfr(c("50","55","65"), function(rr) {
-    xcol <- paste0("x",rr,"_prior")
-    tibble(subject=d$subject_index,x=d[[xcol]],y=as.integer(choice==d$prior)) %>%
-      group_by(subject,x) %>% summarise(n=n(),p=mean(y),.groups="drop") %>%
-      filter(n>=MIN_TRIALS_PER_BIN) %>% group_by(x) %>%
-      summarise(value=mean(p),se=sd(p)/sqrt(n()),.groups="drop") %>%
-      mutate(reliability=paste0(rr,"%"))
-  }) %>% mutate(group=group_name,draw=draw)
-}
-
-observed_ev <- map_dfr(objects,function(o) evidence_one(o$data,o$data$observed_choice,o$info$group))
-pred_ev <- map_dfr(objects,function(o) map_dfr(seq_len(nrow(o$pred)),
-                                               function(k) evidence_one(o$data,o$pred[k,],o$info$group,k)))
-pred_ev_band <- pred_ev %>% group_by(group,reliability,x) %>% summarise(
-  mean=mean(value),lo=quantile(value,.025),hi=quantile(value,.975),.groups="drop")
-
-observed_ev <- observed_ev %>%
-  mutate(
-    plot_row="Observed data (solid)",
-    group_panel=factor(group,levels=group_levels)
-  )
+# ---------------------------------------------------------------------
+# Plotting labels
+# ---------------------------------------------------------------------
 
 pred_ev_band <- pred_ev_band %>%
+  
   mutate(
-    plot_row="Model prediction (dashed)",
-    group_panel=factor(group,levels=group_levels)
-  )
-
-p_evidence <- ggplot() +
-  geom_ribbon(
-    data=pred_ev_band,
-    aes(x,ymin=lo,ymax=hi,fill=reliability,group=reliability),
-    alpha=.18
-  ) +
-  geom_line(
-    data=pred_ev_band,
-    aes(x,mean,colour=reliability,group=reliability),
-    linetype="dashed",linewidth=1
-  ) +
-  geom_errorbar(
-    data=observed_ev,
-    aes(x,ymin=value-se,ymax=value+se,colour=reliability),
-    width=.08
-  ) +
-  geom_line(
-    data=observed_ev,
-    aes(x,value,colour=reliability,group=reliability),
-    linewidth=1
-  ) +
-  geom_point(
-    data=observed_ev,
-    aes(x,value,colour=reliability),
-    fill="white",shape=21,size=2.3
-  ) +
-  facet_grid(
-    rows=vars(plot_row),
-    cols=vars(group_panel)
-  ) +
-  geom_vline(xintercept=0,linetype="dashed",colour="grey55") +
-  geom_hline(yintercept=.5,linetype="dashed",colour="grey55") +
-  scale_colour_manual(values=rel_cols) + scale_fill_manual(values=rel_cols) +
-  coord_cartesian(ylim=c(0,1)) +
-  labs(x="Net samples favouring true base-rate colour",
-       y="Proportion choosing true base-rate colour",
-       title="Reliability-specific evidence integration",
-       subtitle="Top: observed participant data. Bottom: model predictions and 95% intervals") +
-  theme_classic(base_size=11) +
-  theme(
-    legend.position="bottom",
-    strip.text=element_text(face="bold"),
-    strip.text.y=element_text(angle=90)
-  )
-
-# 4. OVERALL RAW PSE ----------------------------------------------------
-# One probit psychometric fit per participant across all 240 trials.
-# This is the raw PSE: Blue-prior shifts can be below 0.5 and Red-prior
-# shifts can be above 0.5. It is not recoded into positive aligned bias.
-
-fit_raw_pse <- function(x, blue_choice) {
-  ok <- is.finite(x) & is.finite(blue_choice)
-  x <- x[ok]
-  blue_choice <- blue_choice[ok]
-  if (length(x) < 12 || length(unique(blue_choice)) < 2 ||
-      length(unique(x)) < 2) return(NA_real_)
-  fit <- tryCatch(
-    suppressWarnings(glm(blue_choice ~ x, family=binomial(link="probit"))),
-    error=function(e) NULL
-  )
-  if (is.null(fit) || length(coef(fit)) < 2 ||
-      any(!is.finite(coef(fit))) || abs(coef(fit)[2]) < 1e-10) return(NA_real_)
-  pmin(pmax(-coef(fit)[1] / coef(fit)[2], 0), 1)
-}
-
-observed_pse <- map_dfr(objects, function(o) {
-  split_rows <- split(seq_len(nrow(o$data)), o$data$subject_index)
-  map_dfr(names(split_rows), function(ss) {
-    ii <- split_rows[[ss]]
-    tibble(
-      subject_index=as.integer(ss),
-      prior_colour=first(o$data$prior_colour[ii]),
-      raw_pse=fit_raw_pse(
-        o$data$neutral_blue_probability[ii],
-        as.integer(o$data$observed_choice[ii] == 1)
+    
+    plot_row = factor(
+      "Model predictions",
+      levels = c(
+        "Model predictions",
+        "Behavioural data"
+      )
+    ),
+    
+    group_panel = factor(
+      group,
+      levels = group_levels
+    ),
+    
+    model = factor(
+      model,
+      levels = model_levels
+    ),
+    
+    reliability = factor(
+      reliability,
+      levels = c(
+        "50%",
+        "55%",
+        "65%"
       )
     )
-  }) %>% mutate(group=o$info$group)
-})
+  )
 
-predicted_pse <- map_dfr(objects, function(o) {
-  split_rows <- split(seq_len(nrow(o$data)), o$data$subject_index)
-  map_dfr(seq_len(nrow(o$pred)), function(k) {
-    map_dfr(names(split_rows), function(ss) {
-      ii <- split_rows[[ss]]
-      tibble(
-        draw=k,
-        subject_index=as.integer(ss),
-        prior_colour=first(o$data$prior_colour[ii]),
-        raw_pse=fit_raw_pse(
-          o$data$neutral_blue_probability[ii],
-          as.integer(o$pred[k,ii] == 1)
-        )
+
+observed_ev <- observed_ev %>%
+  
+  mutate(
+    
+    plot_row = factor(
+      "Behavioural data",
+      levels = c(
+        "Model predictions",
+        "Behavioural data"
       )
-    })
-  }) %>% mutate(group=o$info$group)
-})
-
-predicted_pse_group <- predicted_pse %>%
-  group_by(group,prior_colour,draw) %>%
-  summarise(raw_pse=mean(raw_pse,na.rm=TRUE),.groups="drop")
-
-predicted_pse_interval <- predicted_pse_group %>%
-  group_by(group,prior_colour) %>%
-  summarise(
-    mean=mean(raw_pse,na.rm=TRUE),
-    lo=quantile(raw_pse,.025,na.rm=TRUE),
-    hi=quantile(raw_pse,.975,na.rm=TRUE),
-    .groups="drop"
+    ),
+    
+    group_panel = factor(
+      group,
+      levels = group_levels
+    ),
+    
+    reliability = factor(
+      reliability,
+      levels = c(
+        "50%",
+        "55%",
+        "65%"
+      )
+    )
   )
 
-observed_pse <- observed_pse %>%
-  mutate(
-    plot_row="Observed participants",
-    group_panel=factor(group,levels=group_levels)
-  )
 
-observed_pse_interval <- observed_pse %>%
-  group_by(group,group_panel,plot_row,prior_colour) %>%
-  summarise(
-    n=sum(is.finite(raw_pse)),
-    mean=mean(raw_pse,na.rm=TRUE),
-    se=sd(raw_pse,na.rm=TRUE)/sqrt(n),
-    lo=mean-qt(.975,pmax(n-1,1))*se,
-    hi=mean+qt(.975,pmax(n-1,1))*se,
-    .groups="drop"
-  )
+# ---------------------------------------------------------------------
+# PLOT 2: EVIDENCE INTEGRATION
+# ---------------------------------------------------------------------
 
-predicted_pse_interval <- predicted_pse_interval %>%
-  mutate(
-    plot_row="Model prediction",
-    group_panel=factor(group,levels=group_levels)
-  )
+p_evidence <- ggplot() +
+  
+  # MODEL PREDICTIONS ---------------------------------------------
 
-p_raw_pse <- ggplot() +
-  geom_jitter(
-    data=observed_pse,
-    aes(prior_colour,raw_pse,colour=prior_colour),
-    width=.12,height=0,alpha=.7,size=2
+geom_ribbon(
+  data = pred_ev_band,
+  aes(
+    x = x,
+    ymin = lo,
+    ymax = hi,
+    fill = model,
+    group = interaction(
+      model,
+      reliability
+    )
+  ),
+  alpha = .07
+) +
+  
+  geom_line(
+    data = pred_ev_band,
+    aes(
+      x = x,
+      y = mean,
+      colour = model,
+      linetype = reliability,
+      group = interaction(
+        model,
+        reliability
+      )
+    ),
+    linewidth = 1
   ) +
-  geom_errorbar(
-    data=observed_pse_interval,
-    aes(x=prior_colour,ymin=lo,ymax=hi,colour=prior_colour),
-    inherit.aes=FALSE,
-    width=.14,linewidth=1
+  
+  
+  # BEHAVIOURAL DATA ---------------------------------------------
+
+geom_errorbar(
+  data = observed_ev,
+  aes(
+    x = x,
+    ymin = value - se,
+    ymax = value + se,
+    group = reliability
+  ),
+  colour = "black",
+  width = .08,
+  linewidth = .5
+) +
+  
+  geom_line(
+    data = observed_ev,
+    aes(
+      x = x,
+      y = value,
+      linetype = reliability,
+      group = reliability
+    ),
+    colour = "black",
+    linewidth = 1
   ) +
+  
   geom_point(
-    data=observed_pse_interval,
-    aes(x=prior_colour,y=mean,colour=prior_colour),
-    inherit.aes=FALSE,
-    shape=18,size=3.2
+    data = observed_ev,
+    aes(
+      x = x,
+      y = value,
+      group = reliability
+    ),
+    colour = "black",
+    fill = "white",
+    shape = 21,
+    size = 2.3
   ) +
-  geom_errorbar(
-    data=predicted_pse_interval,
-    aes(x=prior_colour,ymin=lo,ymax=hi,colour=prior_colour),
-    inherit.aes=FALSE,
-    width=.14,linewidth=1
+  
+  
+  # REFERENCE LINES ----------------------------------------------
+
+geom_vline(
+  xintercept = 0,
+  linetype = "dashed",
+  colour = "grey55"
+) +
+  
+  geom_hline(
+    yintercept = .5,
+    linetype = "dashed",
+    colour = "grey55"
   ) +
-  geom_point(
-    data=predicted_pse_interval,
-    aes(x=prior_colour,y=mean,colour=prior_colour),
-    inherit.aes=FALSE,
-    shape=21,fill="white",size=3.2,stroke=1
+  
+  
+  # FACETS -------------------------------------------------------
+
+facet_grid(
+  rows = vars(
+    plot_row
+  ),
+  cols = vars(
+    group_panel
+  )
+) +
+  
+  
+  # SCALES -------------------------------------------------------
+
+scale_colour_manual(
+  values = model_cols
+) +
+  
+  scale_fill_manual(
+    values = model_cols
   ) +
-  facet_grid(rows=vars(plot_row),cols=vars(group_panel)) +
-  geom_hline(yintercept=.5,linetype="dashed",colour="grey50") +
-  scale_colour_manual(values=c("Blue prior"="#0072B2","Red prior"="#D94F16")) +
-  coord_cartesian(ylim=c(.2,.8)) +
-  labs(
-    x=NULL,y="Raw PSE",
-    title="Observed and posterior-predicted raw PSE",
-    subtitle="Top: observed means and 95% confidence intervals. Bottom: model means and 95% posterior-predictive intervals"
+  
+  scale_linetype_manual(
+    values = reliability_linetypes
   ) +
-  theme_classic(base_size=12) +
+  
+  coord_cartesian(
+    ylim = c(
+      0,
+      1
+    )
+  ) +
+  
+  
+  # LABELS -------------------------------------------------------
+
+labs(
+  x = "Net samples favouring true base-rate colour",
+  y = "Proportion choosing true base-rate colour",
+  colour = "Model",
+  fill = "Model",
+  linetype = "Reliability",
+  title = "Reliability-specific evidence integration",
+  subtitle = paste0(
+    "Top: predictions from the available models. ",
+    "Model identity is shown by colour and reliability by line type. ",
+    "Bottom: observed behavioural data with ±1 SE."
+  )
+) +
+  
+  
+  # THEME --------------------------------------------------------
+
+theme_classic(
+  base_size = 11
+) +
+  
   theme(
-    axis.text.x=element_text(angle=25,hjust=1),
-    legend.position="bottom",
-    strip.text=element_text(face="bold"),
-    strip.text.y=element_text(angle=90)
+    legend.position = "bottom",
+    strip.text = element_text(
+      face = "bold"
+    ),
+    strip.text.y = element_text(
+      angle = 90
+    )
   )
 
-ggsave(file.path(output_root,"PPC_1_accuracy.png"),p_accuracy,width=11,height=6,dpi=300)
-ggsave(file.path(output_root,"PPC_2_base_rate_choices_over_trials.png"),p_time,width=15,height=5.5,dpi=300)
-ggsave(file.path(output_root,"PPC_3_evidence_integration.png"),p_evidence,width=15,height=9,dpi=300)
-ggsave(file.path(output_root,"PPC_4_raw_PSE.png"),p_raw_pse,width=15,height=8,dpi=300)
-ggsave(file.path(output_root,"PPC_1_accuracy.pdf"),p_accuracy,width=11,height=6)
-ggsave(file.path(output_root,"PPC_2_base_rate_choices_over_trials.pdf"),p_time,width=15,height=5.5)
-ggsave(file.path(output_root,"PPC_3_evidence_integration.pdf"),p_evidence,width=15,height=9)
-ggsave(file.path(output_root,"PPC_4_raw_PSE.pdf"),p_raw_pse,width=15,height=8)
 
-print(p_accuracy); print(p_time); print(p_evidence); print(p_raw_pse)
-cat("\nCompleted. Plots saved in:\n",output_root,"\n")
+
+# =====================================================================
+# 11. ACCURACY, OVERALL PSE, AND ROLLING PSE
+# =====================================================================
+
+# Fit raw Blue-choice PSE against neutral Blue evidence for each participant.
+# This matches the behavioural plot: Blue/Red prior split, 50-trial rolling
+# windows, one overall participant PSE, and participant-level accuracy.
+pse_one <- function(d, choice, start = 1L, end = 240L) {
+  keep <- !is.na(d$trial) & d$trial >= start & d$trial <= end &
+    is.finite(d$neutral_blue_probability) & !is.na(choice)
+  if (sum(keep) < 12L) return(NA_real_)
+  x <- qlogis(pmin(pmax(d$neutral_blue_probability[keep], 1e-6), 1 - 1e-6))
+  y <- as.integer(choice[keep] == 1L)
+  if (length(unique(x)) < 2L || length(unique(y)) < 2L) return(NA_real_)
+  fit <- suppressWarnings(tryCatch(glm(y ~ x, family = binomial()),
+                                   error = function(e) NULL))
+  if (is.null(fit) || any(!is.finite(coef(fit))) || coef(fit)[2] <= 0)
+    return(NA_real_)
+  pmin(pmax(plogis(-coef(fit)[1] / coef(fit)[2]), 0), 1)
+}
+
+subject_summary <- function(d, choice, start = 1L, end = 240L) {
+  ids <- unique(d$subject_index)
+  tibble(subject_index = ids,
+         prior = vapply(ids, function(id) {
+           pp <- unique(na.omit(d$prior[d$subject_index == id]))
+           if (length(pp) == 1L) pp else NA_integer_
+         }, integer(1)),
+         value = vapply(ids, function(id) {
+           idx <- d$subject_index == id
+           pse_one(d[idx, ], choice[idx], start, end)
+         }, numeric(1)))
+}
+
+mean_se <- function(x) {
+  x <- x[is.finite(x)]
+  tibble(mean = if (length(x)) mean(x) else NA_real_,
+         se = if (length(x) > 1L) sd(x) / sqrt(length(x)) else NA_real_,
+         n = length(x))
+}
+
+predictive_band <- function(d, keys) {
+  d %>% group_by(across(all_of(keys))) %>%
+    summarise(mean = if (any(is.finite(value))) mean(value, na.rm = TRUE) else NA_real_,
+              lo = if (any(is.finite(value))) quantile(value, .025, na.rm = TRUE) else NA_real_,
+              hi = if (any(is.finite(value))) quantile(value, .975, na.rm = TRUE) else NA_real_,
+              .groups = "drop")
+}
+
+observed_accuracy <- map_dfr(behavioural_objects, function(o) {
+  o$data %>% filter(trial <= 240) %>% group_by(subject_index) %>%
+    summarise(value = mean(observed_choice == correct_colour, na.rm = TRUE),
+              .groups = "drop") %>%
+    summarise(mean_se(value)) %>% mutate(group = o$info$group)
+})
+pred_accuracy <- map_dfr(model_objects, function(o) {
+  keep <- !is.na(o$data$trial) & o$data$trial <= 240 &
+    !is.na(o$data$correct_colour)
+  tibble(group = o$group, model = o$model,
+         draw = seq_len(nrow(o$pred)),
+         value = vapply(seq_len(nrow(o$pred)), function(k) {
+           by_subject <- tapply(o$pred[k, keep] == o$data$correct_colour[keep],
+                                o$data$subject_index[keep], mean)
+           mean(by_subject, na.rm = TRUE)
+         }, numeric(1)))
+}) %>% predictive_band(c("group", "model"))
+
+observed_pse <- map_dfr(behavioural_objects, function(o) {
+  subject_summary(o$data, o$data$observed_choice) %>%
+    mutate(group = o$info$group)
+}) %>% filter(prior %in% 1:2) %>%
+  mutate(prior_colour = if_else(prior == 1L, "Blue prior", "Red prior")) %>%
+  group_by(group, prior_colour) %>% summarise(mean_se(value), .groups = "drop")
+pred_pse <- map_dfr(model_objects, function(o) {
+  map_dfr(seq_len(nrow(o$pred)), function(k) {
+    subject_summary(o$data, o$pred[k, ]) %>%
+      mutate(group = o$group, model = o$model, draw = k)
+  })
+}) %>% filter(prior %in% 1:2) %>%
+  mutate(prior_colour = if_else(prior == 1L, "Blue prior", "Red prior")) %>%
+  group_by(group, model, draw, prior_colour) %>%
+  summarise(value = mean(value, na.rm = TRUE), .groups = "drop") %>%
+  predictive_band(c("group", "model", "prior_colour"))
+
+# A 50-trial window ending at each trial, as in the behavioural figure.
+observed_ends <- 50:240
+model_ends <- unique(c(seq(50, 240, by = TRAJECTORY_STEP), 240L))
+observed_pse_time <- map_dfr(behavioural_objects, function(o) {
+  map_dfr(observed_ends, function(t) {
+    subject_summary(o$data, o$data$observed_choice, t - 49L, t) %>%
+      mutate(group = o$info$group, trial = t)
+  })
+}) %>% filter(prior %in% 1:2) %>%
+  mutate(prior_colour = if_else(prior == 1L, "Blue prior", "Red prior")) %>%
+  group_by(group, trial, prior_colour) %>%
+  summarise(mean_se(value), .groups = "drop") %>%
+  group_by(group, prior_colour) %>%
+  mutate(mean = as.numeric(stats::filter(mean, rep(1/3, 3), sides = 2))) %>%
+  ungroup()
+
+pred_pse_time <- map_dfr(model_objects, function(o) {
+  draw_rows <- unique(as.integer(round(seq(1, nrow(o$pred),
+                                           length.out = min(N_TRAJECTORY_DRAWS, nrow(o$pred))))))
+  map_dfr(draw_rows, function(k) {
+    map_dfr(model_ends, function(t) {
+      subject_summary(o$data, o$pred[k, ], t - 49L, t) %>%
+        mutate(group = o$group, model = o$model, draw = k, trial = t)
+    })
+  })
+}) %>% filter(prior %in% 1:2) %>%
+  mutate(prior_colour = if_else(prior == 1L, "Blue prior", "Red prior")) %>%
+  group_by(group, model, draw, trial, prior_colour) %>%
+  summarise(value = mean(value, na.rm = TRUE), .groups = "drop") %>%
+  predictive_band(c("group", "model", "trial", "prior_colour"))
+
+# The behavioural figure has one wide accuracy panel and five PSE panels.
+# Repeat that layout for each model so every curve can be read clearly.
+group_cols <- c("Implicit Unaware" = "#F28E8E",
+                "Implicit Aware" = "#91C998",
+                "Explicit Undirected" = "#E8993B",
+                "Explicit True" = "#18824E",
+                "Explicit Deceptive" = "#9D2929")
+prior_cols <- c("Blue prior" = "#0072B2", "Red prior" = "#D55E00")
+
+# Each dot in the upper plot is one participant, ordered by accuracy within
+# their group, as in the supplied behavioural figure.
+accuracy_subjects <- map_dfr(behavioural_objects, function(o) {
+  o$data %>% filter(!is.na(trial), trial <= 240) %>%
+    group_by(subject_index) %>%
+    summarise(value = mean(observed_choice == correct_colour, na.rm = TRUE),
+              .groups = "drop") %>%
+    mutate(group = o$info$group)
+}) %>%
+  mutate(group = factor(group, levels = group_levels)) %>%
+  arrange(group, value) %>%
+  group_by(group) %>% mutate(rank = row_number()) %>% ungroup()
+
+sizes <- accuracy_subjects %>% count(group) %>%
+  mutate(offset = lag(cumsum(n), default = 0L), mid = offset + (n + 1) / 2)
+accuracy_subjects <- accuracy_subjects %>%
+  left_join(sizes %>% select(group, offset), by = "group") %>%
+  mutate(position = offset + rank)
+group_boundaries <- head(cumsum(sizes$n), -1) + .5
+
+# Model accuracy per participant and draw, then participant means. These
+# supply an aligned model marker in the upper behavioural-style panel.
+model_subject_accuracy <- map_dfr(model_objects, function(o) {
+  d <- o$data
+  keep <- !is.na(d$trial) & d$trial <= 240 & !is.na(d$correct_colour)
+  ids <- unique(d$subject_index[keep])
+  map_dfr(ids, function(id) {
+    idx <- which(keep & d$subject_index == id)
+    tibble(group = o$group, model = o$model, subject_index = id,
+           mean = mean(rowMeans(o$pred[, idx, drop = FALSE] ==
+                                  matrix(d$correct_colour[idx], nrow(o$pred),
+                                         length(idx), byrow = TRUE))))
+  })
+}) %>%
+  left_join(accuracy_subjects %>%
+              select(group, subject_index, position),
+            by = c("group", "subject_index"))
+
+p_accuracy_for <- function(model_name) {
+  model_d <- model_subject_accuracy %>% filter(model == model_name)
+  model_means <- pred_accuracy %>% filter(model == model_name) %>%
+    left_join(sizes %>% mutate(group = as.character(group)) %>%
+                select(group, mid, offset, n), by = "group")
+  observed_means <- observed_accuracy %>%
+    left_join(sizes %>% mutate(group = as.character(group)) %>%
+                select(group, mid, offset, n), by = "group")
+  ggplot(accuracy_subjects, aes(position, 100 * value)) +
+    geom_hline(yintercept = 50, linetype = "dashed", colour = "grey55") +
+    geom_vline(xintercept = group_boundaries, colour = "grey88") +
+    geom_point(aes(colour = group), size = 1.55, alpha = .9) +
+    geom_point(data = model_d, aes(position, 100 * mean),
+               inherit.aes = FALSE, shape = 1, colour = "grey25", size = 1.5) +
+    geom_segment(data = observed_means,
+                 aes(x = offset + .5, xend = offset + n + .5,
+                     y = 100 * mean, yend = 100 * mean),
+                 inherit.aes = FALSE, linewidth = .65) +
+    geom_segment(data = model_means,
+                 aes(x = offset + .5, xend = offset + n + .5,
+                     y = 100 * mean, yend = 100 * mean),
+                 inherit.aes = FALSE, linetype = "dashed", linewidth = .65) +
+    scale_colour_manual(values = group_cols, guide = "none") +
+    scale_x_continuous(breaks = sizes$mid, labels = rep("", nrow(sizes)),
+                       expand = expansion(add = 1)) +
+    coord_cartesian(ylim = c(40, 85)) +
+    labs(x = NULL, y = "Accuracy (%)", title = "Accuracy") +
+    theme_minimal(base_size = 11) +
+    theme(panel.grid.minor = element_blank(),
+          axis.text.x = element_blank(), plot.title = element_text(face = "bold"))
+}
+
+p_trajectory_for <- function(group_name, model_name) {
+  obs <- observed_pse_time %>% filter(group == group_name)
+  mod <- pred_pse_time %>% filter(group == group_name, model == model_name)
+  ggplot() +
+    geom_hline(yintercept = .5, linetype = "dashed", colour = "grey55") +
+    geom_ribbon(data = mod,
+                aes(trial, ymin = lo, ymax = hi, fill = prior_colour),
+                alpha = .08, na.rm = TRUE) +
+    geom_line(data = mod,
+              aes(trial, mean, colour = prior_colour, group = prior_colour),
+              linetype = "dashed", linewidth = .8, na.rm = TRUE) +
+    geom_line(data = obs,
+              aes(trial, mean, colour = prior_colour, group = prior_colour),
+              linewidth = 1.1, na.rm = TRUE) +
+    scale_colour_manual(values = prior_cols, drop = FALSE) +
+    scale_fill_manual(values = prior_cols, guide = "none") +
+    scale_x_continuous(breaks = c(50, 100, 150, 200, 240),
+                       limits = c(50, 240)) +
+    coord_cartesian(ylim = c(.2, .8)) +
+    labs(x = "Trial", y = if (group_name == group_levels[1]) "Raw PSE" else NULL,
+         title = group_name) +
+    theme_minimal(base_size = 10) +
+    theme(panel.grid.minor = element_blank(),
+          plot.title = element_text(face = "bold", size = 10),
+          axis.text.x = element_text(angle = 45, hjust = 1),
+          legend.position = if (group_name == group_levels[5]) "bottom" else "none")
+}
+
+p_overall_for <- function(model_name) {
+  obs <- observed_pse %>% mutate(group = factor(group, levels = group_levels))
+  mod <- pred_pse %>% filter(model == model_name) %>%
+    mutate(group = factor(group, levels = group_levels))
+  ggplot() +
+    geom_hline(yintercept = .5, linetype = "dashed", colour = "grey55") +
+    geom_errorbar(data = mod,
+                  aes(prior_colour, ymin = lo, ymax = hi, colour = prior_colour),
+                  width = .17, alpha = .65) +
+    geom_point(data = mod, aes(prior_colour, mean, colour = prior_colour),
+               shape = 1, size = 3) +
+    geom_errorbar(data = obs,
+                  aes(prior_colour, ymin = mean - se, ymax = mean + se,
+                      colour = prior_colour), width = .08, linewidth = .9) +
+    geom_point(data = obs, aes(prior_colour, mean, colour = prior_colour),
+               size = 2.5) +
+    facet_wrap(~group, nrow = 1) +
+    scale_colour_manual(values = prior_cols, guide = "none") +
+    coord_cartesian(ylim = c(.2, .8)) +
+    labs(x = NULL, y = "Raw PSE", title = paste(model_name, "— overall PSE"),
+         subtitle = "Filled point ±1 SE: observed participants; hollow point and interval: model predictions") +
+    theme_minimal(base_size = 11) +
+    theme(strip.text = element_text(face = "bold"),
+          axis.text.x = element_text(angle = 35, hjust = 1),
+          panel.grid.minor = element_blank())
+}
+
+# Use grid viewports to reproduce the 1-wide / 5-small panel geometry
+# without requiring any extra R packages. Nothing is saved to disk.
+draw_behavioural_layout <- function(model_name) {
+  grid::grid.newpage()
+  grid::pushViewport(grid::viewport(
+    layout = grid::grid.layout(2, 5,
+                               heights = grid::unit(c(.48, .52), "null"))))
+  print(p_accuracy_for(model_name),
+        vp = grid::viewport(layout.pos.row = 1, layout.pos.col = 1:5),
+        newpage = FALSE)
+  for (g in seq_along(group_levels)) {
+    print(p_trajectory_for(group_levels[g], model_name),
+          vp = grid::viewport(layout.pos.row = 2, layout.pos.col = g),
+          newpage = FALSE)
+  }
+  grid::popViewport()
+}
+
+for (model_name in intersect(model_levels, unique(pred_pse_time$model))) {
+  draw_behavioural_layout(model_name)
+  print(p_overall_for(model_name))
+}
+
+# =====================================================================
+# 12. DISPLAY PLOTS
+# =====================================================================
+
+print(
+  p_evidence
+)

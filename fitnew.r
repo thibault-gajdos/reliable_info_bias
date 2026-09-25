@@ -9,7 +9,7 @@ library(loo)
 ##################################################
 ## PREPARE THE DATA
 ##################################################
-load("/Users/bty615/Documents/GitHub/reliable_info_bias/data/data_priorbelief_deceptive_exp13.rdata")
+load("/Users/bty615/Documents/GitHub/reliable_info_bias/data/data_priorbelief_truthful_exp13.rdata")
 
 ## Response coding:
 ## If ResponseButtonOrder = 1: blue -> 1, red -> 0
@@ -145,7 +145,7 @@ data_list <- list(
 setwd("/Users/bty615/Documents/GitHub/reliable_info_bias/stan")
 
 model <- cmdstan_model(
-  stan_file = "./localeta_model.stan",
+  stan_file = "./learning_model.stan",
   force_recompile = TRUE,
   cpp_options = list(
     stan_opencl = FALSE,
@@ -188,19 +188,19 @@ dir.create("./results/loo/exp11_unaware/", recursive = TRUE, showWarnings = FALS
 
 save(
   fit,
-  file = "./results/fits/exp11_unaware/localeta_deceptive_exp13.rdata"
+  file = "./results/fits/exp11_unaware/learning_truthful_exp13.rdata"
 )
 
 save(
   loo_result,
-  file = "./results/loo/exp11_unaware/localeta_deceptive_exp13.rdata"
+  file = "./results/loo/exp11_unaware/learning_truthful_exp13.rdata"
 )
 
 cat("\nSaved fit to:\n")
-cat("./results/fits/exp11_unaware/localeta_deceptive_exp13.rdata\n")
+cat("./results/fits/exp11_unaware/learning_truthful_exp13.rdata\n")
 
 cat("\nSaved LOO to:\n")
-cat("./results/loo/exp11_unaware/localeta_deceptive_exp13.rdata\n")
+cat("./results/loo/exp11_unaware/learning_truthful_exp13.rdata\n")
 
 
 
