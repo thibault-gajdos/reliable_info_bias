@@ -19,7 +19,7 @@ functions {
                    array[,] int choice,
                    matrix param_raw,
                    array[,] int feedback) { 
-) { 
+
     
     real lp = 0;
     real V_b_min = 0.001;
