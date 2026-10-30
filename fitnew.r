@@ -221,6 +221,307 @@ cat("./results/loo/exp11_unaware/learning_truthful_exp13.rdata\n")
 
 
 
+# rm(list = ls(all = TRUE))
+
+library(tidyverse)
+library(posterior)
+library(bayesplot)
+library(cmdstanr)
+library(loo)
+
+##################################################
+## PREPARE THE DATA
+##################################################
+
+# "exp11_unaware", "exp11_aware", "exp12_undirected",
+# "exp13_truthful", "exp13_deceptive"
+
+group_name <- "exp13_deceptive"
+model_name <- "learning_2channel_instr"
+
+load("/Users/bty615/Documents/GitHub/reliable_info_bias/data/data_priorbelief_deceptive_exp13.rdata")
+
+## Response coding:
+## If ResponseButtonOrder = 1: blue -> 1, red -> 0
+## If ResponseButtonOrder = 0: blue -> 0, red -> 1
+##
+## Recode choice:
+## blue = 1
+## red  = 2
+
+data <- data %>%
+  mutate(
+    choice = case_when(
+      ResponseButtonOrder == 1 & Response == 0 ~ 2,
+      ResponseButtonOrder== 1 & Response == 1 ~ 1,
+      ResponseButtonOrder == 0 & Response == 0 ~ 1,
+     ResponseButtonOrder == 0 & Response == 1 ~ 2,
+      TRUE ~ NA_real_
+    )
+  ) %>%
+  mutate(
+    across(
+      starts_with("color"),
+      ~ case_when(
+        . == "blue" ~ 1,
+        . == "red"  ~ 2,
+        TRUE ~ NA_real_
+      )
+    )
+  ) %>%
+  rowwise() %>%
+  mutate(
+    sample_number = sum(!is.na(c_across(starts_with("proba_"))))
+  ) %>%
+  ungroup() %>%
+  mutate(
+    ## Feedback: Blue = 1, Red = 0
+    feedback = case_when(
+      ResponseButtonOrder == 1 & CorrectResponse == 1 ~ 1L,
+      ResponseButtonOrder == 1 & CorrectResponse == 0 ~ 0L,
+      ResponseButtonOrder == 0 & CorrectResponse == 0 ~ 1L,
+      ResponseButtonOrder == 0 & CorrectResponse == 1 ~ 0L,
+      TRUE ~ NA_integer_
+    )
+  )
+
+##################################################
+## CHECK BASIC DATA STRUCTURE
+##################################################
+
+d <- data %>%
+  group_by(ParticipantPrivateID) %>%
+  summarise(t_subjs = n(), .groups = "drop")
+
+t_subjs <- d$t_subjs
+subjs <- d$ParticipantPrivateID
+
+N <- nrow(d)
+T_max <- max(t_subjs)
+I_max <- max(data$sample_number)
+
+cat("N subjects:", N, "\n")
+cat("T max:", T_max, "\n")
+cat("I max:", I_max, "\n")
+cat("Total rows:", nrow(data), "\n")
+
+##################################################
+## INSTRUCTION CONDITION
+##################################################
+
+## 1 = Blue more likely
+## 2 = Red more likely
+## 3 = One colour more likely
+## 4 = No instruction
+
+if (group_name %in% c("exp11_unaware", "exp11_aware")) {
+  
+  instr <- rep(4L, N)
+  
+} else if (group_name == "exp12_undirected") {
+  
+  instr <- rep(3L, N)
+  
+} else if (group_name %in% c("exp13_truthful", "exp13_deceptive")) {
+  
+  instruction_data <- data %>%
+    group_by(ParticipantPrivateID) %>%
+    summarise(
+      instr = first(InstructedPrior),
+      n_instr = n_distinct(InstructedPrior),
+      .groups = "drop"
+    )
+  
+  stopifnot(
+    all(instruction_data$n_instr == 1L),
+    all(instruction_data$instr %in% c(1L, 2L))
+  )
+  
+  instr <- as.integer(
+    instruction_data$instr[
+      match(subjs, instruction_data$ParticipantPrivateID)
+    ]
+  )
+  
+} else {
+  
+  stop("Check group_name.")
+  
+}
+
+##################################################
+## INITIALISE ARRAYS FOR STAN
+##################################################
+
+choice   <- array(-1, c(N, T_max))
+color    <- array(-1, c(N, T_max, I_max))
+proba    <- array(-1, c(N, T_max, I_max))
+sample   <- array(-1, c(N, T_max))
+feedback <- array(0,  c(N, T_max))
+
+##################################################
+## FILL ARRAYS
+##################################################
+
+for (n in 1:N) {
+  
+  t <- t_subjs[n]
+  
+  data_subj <- data %>%
+    filter(ParticipantPrivateID == subjs[n]) %>%
+    arrange(TrialNumber)
+  
+  choice[n, 1:t] <- data_subj$choice
+  feedback[n, 1:t] <- data_subj$feedback
+  
+  for (k in 1:t) {
+    
+    data_subj_t <- data_subj[k, ]
+    
+    sample[n, k] <- data_subj_t$sample_number
+    
+    for (i in 1:data_subj_t$sample_number) {
+      
+      color_var <- paste0("color_", i)
+      proba_var <- paste0("proba_", i)
+      
+      color[n, k, i] <- data_subj[[color_var]][k]
+      proba[n, k, i] <- data_subj[[proba_var]][k] / 100
+      
+    }
+  }
+}
+
+##################################################
+## CHECK DATA
+##################################################
+
+stopifnot(
+  all(instr %in% 1:4),
+  !anyNA(data$choice),
+  !anyNA(data$feedback),
+  all(data$choice %in% c(1, 2)),
+  all(data$feedback %in% c(0, 1)),
+  all(data$sample_number >= 1)
+)
+
+for (n in 1:N) {
+  for (t in 1:t_subjs[n]) {
+    
+    stopifnot(
+      all(color[n, t, 1:sample[n, t]] %in% c(1, 2)),
+      all(proba[n, t, 1:sample[n, t]] > 0),
+      all(proba[n, t, 1:sample[n, t]] < 1)
+    )
+    
+  }
+}
+
+##################################################
+## CREATE DATA LIST FOR STAN
+##################################################
+
+data_list <- list(
+  N = N,
+  T_max = T_max,
+  I_max = I_max,
+  Tsubj = t_subjs,
+  color = color,
+  proba = proba,
+  choice = choice,
+  sample = sample,
+  feedback = feedback,
+  instr = instr,
+  grainsize = 5
+)
+
+##################################################
+## FIT THE MODEL
+##################################################
+
+setwd("/Users/bty615/Documents/GitHub/reliable_info_bias/stan")
+
+model <- cmdstan_model(
+  stan_file = paste0("./", model_name, ".stan"),
+  force_recompile = TRUE,
+  cpp_options = list(
+    stan_opencl = FALSE,
+    stan_threads = TRUE
+  ),
+  stanc_options = list("O1"),
+  compile_model_methods = TRUE
+)
+
+fit <- model$sample(
+  data = data_list,
+  seed = 4321,
+  chains = 4,
+  parallel_chains = 4,
+  threads_per_chain = 5,
+  iter_warmup = 2000,
+  iter_sampling = 1000,
+  max_treedepth = 12,
+  adapt_delta = 0.9,
+  save_warmup = FALSE
+)
+
+##################################################
+## COMPUTE LOO
+##################################################
+
+loo_result <- fit$loo(
+  cores = 10,
+  moment_match = TRUE
+)
+
+print(loo_result)
+
+##################################################
+## SAVE RESULTS
+##################################################
+
+fit_dir <- file.path("./results/fits", group_name)
+loo_dir <- file.path("./results/loo", group_name)
+
+dir.create(fit_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(loo_dir, recursive = TRUE, showWarnings = FALSE)
+
+fit_file <- file.path(fit_dir, paste0(model_name, ".rdata"))
+loo_file <- file.path(loo_dir, paste0(model_name, ".rdata"))
+
+# Load draws before saving
+invisible(fit$draws())
+
+save(
+  fit,
+  subjs,
+  data_list,
+  file = fit_file
+)
+
+save(
+  loo_result,
+  file = loo_file
+)
+
+cat("\nSaved fit to:\n")
+cat(fit_file, "\n")
+
+cat("\nSaved LOO to:\n")
+cat(loo_file, "\n")
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

@@ -24,7 +24,7 @@ dir.create(
 
 #################################################
 ##
-##      FIND MODEL FIT — NO MENU
+##      FIND ALL LETA_2CHANNELS FITS
 ##
 #################################################
 
@@ -35,298 +35,310 @@ fit_files <- list.files(
   ignore.case = TRUE
 )
 
-fit_files <- fit_files[
-  grepl(
-    "leta_2channels",
-    basename(fit_files),
-    ignore.case = TRUE
-  )
-]
+fit_files <- sort(
+  fit_files[
+    grepl(
+      "leta_2channels",
+      basename(fit_files),
+      ignore.case = TRUE
+    )
+  ]
+)
 
 if (length(fit_files) == 0L) {
-  stop(
-    "No leta_2channels .rdata fit found in: ",
-    fit_folder
-  )
+  stop("No leta_2channels fits found in: ", fit_folder)
 }
 
-# Use the most recently modified matching fit.
-fit_path <- fit_files[
-  which.max(file.info(fit_files)$mtime)
-]
-
-cat("\nLoading fit:\n", fit_path, "\n")
+cat("\nFits to export:\n")
+print(basename(fit_files))
 
 #################################################
 ##
-##      LOAD MODEL FIT
-##
-#################################################
-
-fit_environment <- new.env()
-
-loaded_objects <- load(
-  fit_path,
-  envir = fit_environment
-)
-
-fit_names <- loaded_objects[
-  vapply(
-    loaded_objects,
-    function(object_name) {
-      inherits(
-        get(object_name, envir = fit_environment),
-        "CmdStanMCMC"
-      )
-    },
-    logical(1)
-  )
-]
-
-if (length(fit_names) != 1L) {
-  stop(
-    "Expected exactly one CmdStanMCMC fit in: ",
-    fit_path,
-    ". Found: ",
-    length(fit_names)
-  )
-}
-
-fit <- get(
-  fit_names[[1]],
-  envir = fit_environment
-)
-
-# Derive output filenames from the loaded fit filename.
-output_name <- tools::file_path_sans_ext(
-  basename(fit_path)
-)
-
-output_name <- sub(
-  "^fit_",
-  "",
-  output_name,
-  ignore.case = TRUE
-)
-
-#################################################
-##
-##      PARAMETER ORDER FROM YOUR STAN MODEL
+##      PARAMETER ORDER IN YOUR STAN MODEL
 ##
 #################################################
 
 parameter_names <- c(
-  "alpha",   # params[n, 1]
-  "beta",    # params[n, 2]
-  "lambda",  # params[n, 3]
-  "eta",     # params[n, 4]
-  "alpha0",  # params[n, 5]
-  "beta0",   # params[n, 6]
-  "delta"    # params[n, 7]
+  "alpha",
+  "beta",
+  "lambda",
+  "eta",
+  "alpha0",
+  "beta0",
+  "delta"
 )
 
-group_variables <- paste0(
-  "mu_",
-  parameter_names
-)
+group_variables <- paste0("mu_", parameter_names)
 
 #################################################
 ##
-##      EXTRACT GROUP PARAMETERS
+##      SUMMARY FUNCTION
 ##
 #################################################
 
-leta_2channels.group <- fit$summary(
-  variables = group_variables,
-  "mean",
-  "median",
-  "sd",
-  q2.5 = ~unname(quantile(.x, 0.025)),
-  q97.5 = ~unname(quantile(.x, 0.975)),
-  "rhat",
-  "ess_bulk",
-  "ess_tail"
-) %>%
-  arrange(
-    match(variable, group_variables)
+summarise_parameters <- function(fit, variables) {
+  fit$summary(
+    variables = variables,
+    "mean",
+    "median",
+    "sd",
+    q2.5 = ~unname(quantile(.x, 0.025)),
+    q97.5 = ~unname(quantile(.x, 0.975)),
+    "rhat",
+    "ess_bulk",
+    "ess_tail"
   )
+}
 
-if (
-  nrow(leta_2channels.group) != 7L ||
-  !setequal(
-    leta_2channels.group$variable,
+#################################################
+##
+##      EXPORT EACH FIT
+##
+#################################################
+
+export_fit <- function(fit_path) {
+  
+  cat("\nLoading:", basename(fit_path), "\n")
+  
+  fit_environment <- new.env()
+  
+  loaded_objects <- load(
+    fit_path,
+    envir = fit_environment
+  )
+  
+  fit_names <- loaded_objects[
+    vapply(
+      loaded_objects,
+      function(object_name) {
+        inherits(
+          get(object_name, envir = fit_environment),
+          "CmdStanMCMC"
+        )
+      },
+      logical(1)
+    )
+  ]
+  
+  if (length(fit_names) != 1L) {
+    stop("Expected exactly one CmdStanMCMC fit.")
+  }
+  
+  fit <- get(
+    fit_names[[1]],
+    envir = fit_environment
+  )
+  
+  output_name <- tools::file_path_sans_ext(
+    basename(fit_path)
+  )
+  
+  output_name <- sub(
+    "^fit_",
+    "",
+    output_name,
+    ignore.case = TRUE
+  )
+  
+  #################################################
+  ## GROUP PARAMETERS
+  #################################################
+  
+  leta_2channels.group <- summarise_parameters(
+    fit,
     group_variables
+  ) %>%
+    arrange(match(variable, group_variables))
+  
+  if (
+    nrow(leta_2channels.group) != 7L ||
+    !setequal(
+      leta_2channels.group$variable,
+      group_variables
+    )
+  ) {
+    stop("Fit does not contain the seven expected group parameters.")
+  }
+  
+  #################################################
+  ## INDIVIDUAL PARAMETERS
+  #################################################
+  
+  leta_2channels.individual <- summarise_parameters(
+    fit,
+    "params"
+  ) %>%
+    tidyr::extract(
+      variable,
+      into = c("participant", "parameter_number"),
+      regex = "^params\\[([0-9]+),([0-9]+)\\]$",
+      convert = TRUE
+    )
+  
+  if (
+    anyNA(leta_2channels.individual$participant) ||
+    anyNA(leta_2channels.individual$parameter_number) ||
+    !setequal(
+      leta_2channels.individual$parameter_number,
+      seq_along(parameter_names)
+    )
+  ) {
+    stop("Fit does not match the seven-parameter model.")
+  }
+  
+  participant_check <- leta_2channels.individual %>%
+    group_by(participant) %>%
+    summarise(
+      rows = n(),
+      parameters = n_distinct(parameter_number),
+      .groups = "drop"
+    )
+  
+  if (
+    any(participant_check$rows != 7L) ||
+    any(participant_check$parameters != 7L)
+  ) {
+    stop("Each participant must have seven parameter summaries.")
+  }
+  
+  leta_2channels.individual <- leta_2channels.individual %>%
+    mutate(
+      parameter = parameter_names[parameter_number]
+    ) %>%
+    arrange(participant, parameter_number) %>%
+    select(
+      participant,
+      parameter,
+      mean,
+      median,
+      sd,
+      q2.5,
+      q97.5,
+      rhat,
+      ess_bulk,
+      ess_tail
+    )
+  
+  #################################################
+  ## SAVE GROUP AND INDIVIDUAL CSVs
+  #################################################
+  
+  group_csv <- file.path(
+    summary_folder,
+    paste0("param_group_", output_name, ".csv")
   )
-) {
-  stop("The fit does not contain the seven expected group parameters.")
+  
+  individual_csv <- file.path(
+    summary_folder,
+    paste0("param_individual_", output_name, ".csv")
+  )
+  
+  write_csv(
+    leta_2channels.group,
+    group_csv
+  )
+  
+  write_csv(
+    leta_2channels.individual,
+    individual_csv
+  )
+  
+  #################################################
+  ## ALSO SAVE RDATA SUMMARIES
+  #################################################
+  
+  save(
+    leta_2channels.group,
+    file = file.path(
+      summary_folder,
+      paste0("summary_group_", output_name, ".rdata")
+    )
+  )
+  
+  save(
+    leta_2channels.individual,
+    file = file.path(
+      summary_folder,
+      paste0("summary_individual_", output_name, ".rdata")
+    )
+  )
+  
+  cat("Group CSV:", group_csv, "\n")
+  cat("Individual CSV:", individual_csv, "\n")
+  
+  tibble(
+    fit_file = basename(fit_path),
+    participants = n_distinct(
+      leta_2channels.individual$participant
+    ),
+    group_rows = nrow(leta_2channels.group),
+    individual_rows = nrow(leta_2channels.individual),
+    status = "Saved",
+    detail = NA_character_
+  )
 }
 
 #################################################
 ##
-##      EXTRACT INDIVIDUAL PARAMETERS
+##      RUN ALL FITS
+##
+##      If one fails, continue with the others.
 ##
 #################################################
 
-leta_2channels.individual <- fit$summary(
-  variables = "params",
-  "mean",
-  "median",
-  "sd",
-  q2.5 = ~unname(quantile(.x, 0.025)),
-  q97.5 = ~unname(quantile(.x, 0.975)),
-  "rhat",
-  "ess_bulk",
-  "ess_tail"
+export_results <- lapply(
+  fit_files,
+  function(fit_path) {
+    tryCatch(
+      export_fit(fit_path),
+      error = function(e) {
+        
+        message(
+          "FAILED: ",
+          basename(fit_path),
+          " — ",
+          conditionMessage(e)
+        )
+        
+        tibble(
+          fit_file = basename(fit_path),
+          participants = NA_integer_,
+          group_rows = NA_integer_,
+          individual_rows = NA_integer_,
+          status = "Failed",
+          detail = conditionMessage(e)
+        )
+      }
+    )
+  }
 ) %>%
-  tidyr::extract(
-    variable,
-    into = c("participant", "parameter_number"),
-    regex = "^params\\[([0-9]+),([0-9]+)\\]$",
-    convert = TRUE
-  )
-
-# Check the fit matches the seven-parameter model.
-if (
-  anyNA(leta_2channels.individual$participant) ||
-  anyNA(leta_2channels.individual$parameter_number) ||
-  !setequal(
-    leta_2channels.individual$parameter_number,
-    seq_along(parameter_names)
-  )
-) {
-  stop("Individual parameter indices do not match the seven-parameter model.")
-}
-
-participant_check <- leta_2channels.individual %>%
-  group_by(participant) %>%
-  summarise(
-    rows = n(),
-    parameters = n_distinct(parameter_number),
-    .groups = "drop"
-  )
-
-if (
-  any(participant_check$rows != 7L) ||
-  any(participant_check$parameters != 7L)
-) {
-  stop("Each participant must have exactly seven parameter summaries.")
-}
-
-leta_2channels.individual <- leta_2channels.individual %>%
-  mutate(
-    parameter = parameter_names[parameter_number]
-  ) %>%
-  arrange(
-    participant,
-    parameter_number
-  ) %>%
-  select(
-    participant,
-    parameter,
-    mean,
-    median,
-    sd,
-    q2.5,
-    q97.5,
-    rhat,
-    ess_bulk,
-    ess_tail
-  )
+  bind_rows()
 
 #################################################
 ##
-##      OUTPUT PATHS
+##      DISPLAY AND SAVE EXPORT CHECK
 ##
 #################################################
 
-group_rdata <- file.path(
-  summary_folder,
-  paste0("summary_group_", output_name, ".rdata")
-)
-
-individual_rdata <- file.path(
-  summary_folder,
-  paste0("summary_individual_", output_name, ".rdata")
-)
-
-group_csv <- file.path(
-  summary_folder,
-  paste0("param_group_", output_name, ".csv")
-)
-
-individual_csv <- file.path(
-  summary_folder,
-  paste0("param_individual_", output_name, ".csv")
-)
-
-#################################################
-##
-##      SAVE RDATA
-##
-#################################################
-
-save(
-  leta_2channels.group,
-  file = group_rdata
-)
-
-save(
-  leta_2channels.individual,
-  file = individual_rdata
-)
-
-#################################################
-##
-##      SAVE CSV FILES
-##
-#################################################
+print(export_results, n = Inf, width = Inf)
 
 write_csv(
-  leta_2channels.group,
-  group_csv
+  export_results,
+  file.path(
+    summary_folder,
+    "leta_2channels_export_check.csv"
+  )
 )
 
-write_csv(
-  leta_2channels.individual,
-  individual_csv
-)
-
-#################################################
-##
-##      DISPLAY RESULTS
-##
-#################################################
-
-print(leta_2channels.group)
-print(leta_2channels.individual)
-
-cat("\nGroup CSV saved to:\n", group_csv, "\n")
-cat("\nIndividual CSV saved to:\n", individual_csv, "\n")
-
-cat("\nGroup RData saved to:\n", group_rdata, "\n")
-cat("\nIndividual RData saved to:\n", individual_rdata, "\n")
-
-cat("\nCHECK:\n")
-cat("Loaded fit:", basename(fit_path), "\n")
-cat("Rows:", nrow(leta_2channels.individual), "\n")
 cat(
-  "Participants:",
-  n_distinct(leta_2channels.individual$participant),
-  "\n"
+  "\nSuccessfully exported:",
+  sum(export_results$status == "Saved"),
+  "of",
+  nrow(export_results),
+  "fits.\n"
 )
 
-print(
-  table(leta_2channels.individual$parameter)
-)
-
-
-
-
-
-
-
-
-
+cat("\nOutput folder:\n", summary_folder, "\n")
 
 
 

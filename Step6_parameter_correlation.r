@@ -2000,126 +2000,73 @@ cat(fig_dir, "\n")
 
 
 
+############################################################
+# LEARNING + LOCAL ETA + TWO CHANNELS + INSTRUCTION
+#
+# Diagonal: posterior densities
+# Lower panels: posterior draws
+# Upper panels: within-group posterior correlations
+#
+# Loads all five fits directly.
+# Displays only. No files are saved.
+############################################################
 
+suppressPackageStartupMessages({
+  library(cmdstanr)
+  library(posterior)
+})
 
+############################################################
+# 1. FILE LOCATION
+############################################################
 
+fits_dir <- path.expand(
+  "~/Documents/GitHub/reliable_info_bias/stan/results/fits/exp11_unaware"
+)
 
-rm(list = ls(all = TRUE))
+fit_paths <- c(
+  "Implicit Unaware" = file.path(
+    fits_dir,
+    "learning_leta_2channel_instr_unaware_exp11.rdata"
+  ),
+  "Implicit Aware" = file.path(
+    fits_dir,
+    "learning_leta_2channel_instr_aware_exp11.rdata"
+  ),
+  "Explicit Undirected" = file.path(
+    fits_dir,
+    "learning_leta_2channel_instr_aware_exp12.rdata"
+  ),
+  "Explicit Truthful" = file.path(
+    fits_dir,
+    "learning_leta_2channel_instr_truthful_exp13.rdata"
+  ),
+  "Explicit Deceptive" = file.path(
+    fits_dir,
+    "learning_leta_2channel_instr_deceptive_exp13.rdata"
+  )
+)
 
-setwd("/Users/bty615/Documents/GitHub/reliable_info_bias")
+missing_files <- fit_paths[!file.exists(fit_paths)]
 
-library(tidyverse)
-library(posterior)
-
-##################################################
-## PATHS
-##################################################
-
-fits_dir <- "results/fits/Exp12"
-fig_dir  <- "results/figures/boost_model_corrplots"
-
-if (!dir.exists(fig_dir)) {
-  dir.create(
-    fig_dir,
-    recursive = TRUE
+if (length(missing_files)) {
+  stop(
+    "Missing fit files:\n",
+    paste(missing_files, collapse = "\n")
   )
 }
 
-##################################################
-## HELPER:
-## LOAD FIT OBJECT
-##################################################
-
-load_fit <- function(file_path) {
-  
-  if (!file.exists(file_path)) {
-    stop(
-      "\nMissing fit file:\n",
-      file_path,
-      "\n"
-    )
-  }
-  
-  env <- new.env()
-  
-  loaded_objects <- load(
-    file_path,
-    envir = env
-  )
-  
-  if ("fit" %in% loaded_objects) {
-    return(env$fit)
-  }
-  
-  return(env[[loaded_objects[1]]])
-}
-
-##################################################
-## LOAD ALL FIVE BOOST MODEL FITS
-##################################################
-
-fit_unaware <- load_fit(
-  file.path(
-    fits_dir,
-    "fit_trunc_boost_model_unaware_exp11.rdata"
-  )
-)
-
-fit_aware <- load_fit(
-  file.path(
-    fits_dir,
-    "fit_trunc_boost_model_aware_exp11.rdata"
-  )
-)
-
-fit_explicit <- load_fit(
-  file.path(
-    fits_dir,
-    "fit_trunc_boost_model_aware_exp12.rdata"
-  )
-)
-
-fit_truthful <- load_fit(
-  file.path(
-    fits_dir,
-    "fit_trunc_boost_truthful_exp13.rdata"
-  )
-)
-
-fit_deceptive <- load_fit(
-  file.path(
-    fits_dir,
-    "fit_trunc_boost_deceptive_exp13.rdata"
-  )
-)
-
-##################################################
-## FIT LIST
-##################################################
-
-fit_list <- list(
-  "Implicit Unaware"    = fit_unaware,
-  "Implicit Aware"      = fit_aware,
-  "Explicit Undirected" = fit_explicit,
-  "Explicit Truthful"   = fit_truthful,
-  "Explicit Deceptive"  = fit_deceptive
-)
-
-##################################################
-## GROUP COLOURS
-##################################################
+############################################################
+# 2. GROUP COLOURS AND LABELS
+############################################################
 
 group_cols <- c(
-  "Implicit Unaware"    = "#F4A6A6",  # light red
-  "Implicit Aware"      = "#81C784",  # light green
-  "Explicit Undirected" = "#E69F00",  # orange
-  "Explicit Truthful"   = "#1B5E20",  # dark green
-  "Explicit Deceptive"  = "#8B1A1A"   # dark red
+  "Implicit Unaware"    = "#F4A6A6",
+  "Implicit Aware"      = "#81C784",
+  "Explicit Undirected" = "#E69F00",
+  "Explicit Truthful"   = "#1B5E20",
+  "Explicit Deceptive"  = "#8B1A1A"
 )
-
-##################################################
-## SHORT LABELS
-##################################################
 
 group_short <- c(
   "Implicit Unaware"    = "IU",
@@ -2129,242 +2076,201 @@ group_short <- c(
   "Explicit Deceptive"  = "ED"
 )
 
-##################################################
-## EXTRACT GROUP-LEVEL POSTERIOR PARAMETERS
-##################################################
+############################################################
+# 3. PARAMETERS
+############################################################
 
-extract_pars <- function(
-    fit_obj,
-    group_name
-) {
-  
-  draws <- as_draws_df(
-    fit_obj$draws()
-  )
-  
-  transformed_names <- c(
-    "mu_alpha",
-    "mu_beta",
-    "mu_lambda",
-    "mu_delta",
-    "mu_eta"
-  )
-  
-  ################################################
-  ## CASE 1:
-  ## TRANSFORMED PARAMETERS EXIST
-  ################################################
-  
-  if (all(transformed_names %in% colnames(draws))) {
-    
-    pars <- draws %>%
-      select(
-        mu_alpha,
-        mu_beta,
-        mu_delta,
-        mu_lambda,
-        mu_eta
-      )
-    
-  } else {
-    
-    ################################################
-    ## CASE 2:
-    ## RAW mu_pr PARAMETERS
-    ################################################
-    
-    mu_cols_bracket <- paste0(
-      "mu_pr[",
-      1:5,
-      "]"
-    )
-    
-    mu_cols_dot <- paste0(
-      "mu_pr.",
-      1:5,
-      "."
-    )
-    
-    if (all(mu_cols_bracket %in% colnames(draws))) {
-      
-      mu_cols <- mu_cols_bracket
-      
-    } else if (all(mu_cols_dot %in% colnames(draws))) {
-      
-      mu_cols <- mu_cols_dot
-      
-    } else {
-      
-      mu_cols <- colnames(draws)[
-        grepl(
-          "^mu_pr(\\[|\\.)",
-          colnames(draws)
-        )
-      ]
-      
-      if (length(mu_cols) < 5) {
-        stop(
-          "\nCould not find all five group-level mu parameters for:\n",
-          group_name,
-          "\n"
-        )
-      }
-      
-      get_index <- function(x) {
-        as.numeric(
-          gsub(
-            "[^0-9]",
-            "",
-            x
-          )
-        )
-      }
-      
-      mu_cols <- mu_cols[
-        order(
-          sapply(
-            mu_cols,
-            get_index
-          )
-        )
-      ]
-      
-      mu_cols <- mu_cols[1:5]
-    }
-    
-    pars <- draws %>%
-      select(
-        all_of(mu_cols)
-      )
-    
-    ################################################
-    ## PARAMETER ORDER
-    ##
-    ## 1 = alpha
-    ## 2 = beta
-    ## 3 = lambda
-    ## 4 = delta
-    ## 5 = eta
-    ################################################
-    
-    colnames(pars) <- c(
-      "mu_alpha",
-      "mu_beta",
-      "mu_lambda",
-      "mu_delta",
-      "mu_eta"
-    )
-    
-    pars <- pars %>%
-      mutate(
-        mu_alpha  = pnorm(mu_alpha) * 6,
-        mu_beta   = mu_beta,
-        mu_lambda = pnorm(mu_lambda),
-        mu_delta  = pnorm(mu_delta) * 2,
-        mu_eta    = mu_eta
-      ) %>%
-      select(
-        mu_alpha,
-        mu_beta,
-        mu_delta,
-        mu_lambda,
-        mu_eta
-      )
-  }
-  
-  pars %>%
-    as_tibble() %>%
-    mutate(
-      Group = group_name
-    )
-}
-
-##################################################
-## EXTRACT ALL FIVE GROUPS
-##################################################
-
-all_pars <- bind_rows(
-  lapply(
-    names(fit_list),
-    function(g) {
-      extract_pars(
-        fit_obj = fit_list[[g]],
-        group_name = g
-      )
-    }
-  )
-)
-
-all_pars$Group <- factor(
-  all_pars$Group,
-  levels = c(
-    "Implicit Unaware",
-    "Implicit Aware",
-    "Explicit Undirected",
-    "Explicit Truthful",
-    "Explicit Deceptive"
-  )
-)
-
-##################################################
-## CHECK
-##################################################
-
-cat(
-  "\n============================================\n"
-)
-cat("BOOST MODEL — POSTERIOR CORRELATIONS\n")
-cat("============================================\n\n")
-cat("Posterior draws per group:\n\n")
-print(table(all_pars$Group))
-
-##################################################
-## PARAMETERS
-##################################################
+# Named, transformed group-level parameters.
+# No guessing of raw parameter indices or transformations.
 
 parameter_names <- c(
   "mu_alpha",
   "mu_beta",
   "mu_delta",
   "mu_lambda",
-  "mu_eta"
+  "mu_eta",
+  "mu_alpha0",
+  "mu_beta0",
+  "mu_rho",
+  "Delta"
 )
 
-parameter_labels <- c(
-  expression(mu[alpha]),
-  expression(mu[beta]),
-  expression(mu[delta]),
-  expression(mu[lambda]),
-  expression(mu[eta])
+parameter_labels <- list(
+  mu_alpha  = expression(mu[alpha]),
+  mu_beta   = expression(mu[beta]),
+  mu_delta  = expression(mu[delta]),
+  mu_lambda = expression(mu[lambda]),
+  mu_eta    = expression(mu[eta]),
+  mu_alpha0 = expression(mu[alpha[0]]),
+  mu_beta0  = expression(mu[beta[0]]),
+  mu_rho    = expression(mu[rho]),
+  Delta     = expression(Delta)
 )
 
-##################################################
-## PARAMETER RANGES
-##################################################
+applicable_parameters <- function(group_name) {
+  
+  pars <- parameter_names
+  
+  # No instruction-trust parameter displayed for implicit groups.
+  if (group_name %in% c("Implicit Unaware", "Implicit Aware")) {
+    pars <- setdiff(pars, c("mu_rho", "Delta"))
+  }
+  
+  # The undirected instruction band applies only to that group.
+  if (group_name != "Explicit Undirected") {
+    pars <- setdiff(pars, "Delta")
+  }
+  
+  pars
+}
 
-param_ranges <- lapply(
-  parameter_names,
-  function(p) {
-    range(
-      all_pars[[p]],
-      finite = TRUE,
-      na.rm = TRUE
+############################################################
+# 4. LOAD A SAVED FIT
+############################################################
+
+load_fit <- function(file_path) {
+  
+  env <- new.env()
+  
+  # Encoding warnings about stored comments may appear here.
+  # Warnings are not suppressed.
+  loaded_names <- load(file_path, envir = env)
+  
+  fit_names <- loaded_names[
+    vapply(
+      loaded_names,
+      function(nm) inherits(env[[nm]], "CmdStanMCMC"),
+      logical(1)
+    )
+  ]
+  
+  if (length(fit_names) != 1L) {
+    stop(
+      "Expected exactly one CmdStanMCMC fit in:\n",
+      file_path
     )
   }
+  
+  env[[fit_names]]
+}
+
+############################################################
+# 5. EXTRACT POSTERIOR DRAWS
+############################################################
+
+extract_pars <- function(fit_obj, group_name) {
+  
+  required <- applicable_parameters(group_name)
+  
+  available <- posterior::variables(fit_obj$draws())
+  missing <- setdiff(required, available)
+  
+  if (length(missing)) {
+    stop(
+      "\nMissing parameters for ", group_name, ":\n",
+      paste(missing, collapse = ", "),
+      "\nThis script expects learning_leta_2channel_instr,",
+      "\nincluding mu_eta. Check the selected model file."
+    )
+  }
+  
+  draws <- posterior::as_draws_matrix(
+    fit_obj$draws(variables = required)
+  )
+  
+  pars <- as.data.frame(draws)
+  pars <- pars[, required, drop = FALSE]
+  
+  if (!nrow(pars) || any(!is.finite(as.matrix(pars)))) {
+    stop("Missing or non-finite posterior draws for ", group_name)
+  }
+  
+  # Check convergence of the plotted parameters.
+  diagnostics <- fit_obj$summary(variables = required)
+  
+  if (
+    "rhat" %in% names(diagnostics) &&
+    any(diagnostics$rhat > 1.01, na.rm = TRUE)
+  ) {
+    warning(
+      group_name,
+      ": at least one plotted parameter has R-hat > 1.01."
+    )
+  }
+  
+  # Inapplicable instruction parameters are left blank.
+  for (p in setdiff(parameter_names, required)) {
+    pars[[p]] <- NA_real_
+  }
+  
+  pars <- pars[, parameter_names, drop = FALSE]
+  pars$Group <- group_name
+  
+  pars
+}
+
+############################################################
+# 6. LOAD ALL FIVE GROUPS DIRECTLY
+############################################################
+
+pars_list <- setNames(
+  vector("list", length(fit_paths)),
+  names(fit_paths)
 )
 
-names(param_ranges) <- parameter_names
+for (g in names(fit_paths)) {
+  
+  cat("\nLoading:", g, "\n")
+  cat(fit_paths[[g]], "\n")
+  
+  current_fit <- load_fit(fit_paths[[g]])
+  pars_list[[g]] <- extract_pars(current_fit, g)
+  
+  rm(current_fit)
+}
 
-##################################################
-## PANEL:
-## SCATTERPLOT
-##################################################
+all_pars <- do.call(rbind, pars_list)
+rownames(all_pars) <- NULL
+
+all_pars$Group <- factor(
+  all_pars$Group,
+  levels = names(group_cols)
+)
+
+cat("\nPosterior draws per group:\n")
+print(table(all_pars$Group))
+
+############################################################
+# 7. PARAMETER RANGES
+############################################################
+
+param_ranges <- setNames(
+  lapply(parameter_names, function(p) {
+    
+    x <- all_pars[[p]]
+    x <- x[is.finite(x)]
+    
+    if (!length(x)) {
+      stop("No finite draws for ", p)
+    }
+    
+    limits <- range(x)
+    
+    if (diff(limits) == 0) {
+      limits <- limits + c(-0.5, 0.5)
+    }
+    
+    limits + c(-1, 1) * diff(limits) * 0.03
+  }),
+  parameter_names
+)
+
+############################################################
+# 8. SCATTER PANEL
+############################################################
 
 draw_scatter_panel <- function(
-    x,
-    y,
-    x_name,
-    y_name,
+    x, y, x_name, y_name,
     show_x_axis = FALSE,
     show_y_axis = FALSE
 ) {
@@ -2373,30 +2279,22 @@ draw_scatter_panel <- function(
     NA,
     xlim = param_ranges[[x_name]],
     ylim = param_ranges[[y_name]],
-    xlab = "",
-    ylab = "",
+    xlab = "", ylab = "",
     axes = FALSE,
     type = "n"
   )
   
-  box(
-    col = "grey70",
-    lwd = 0.8
-  )
+  box(col = "grey70", lwd = 0.8)
   
-  for (g in levels(all_pars$Group)) {
+  for (g in names(group_cols)) {
     
-    idx <- (
-      all_pars$Group == g &
-        is.finite(x) &
-        is.finite(y)
-    )
+    idx <- all_pars$Group == g &
+      is.finite(x) & is.finite(y)
     
     points(
-      x[idx],
-      y[idx],
+      x[idx], y[idx],
       pch = 16,
-      cex = 0.56,
+      cex = 0.40,
       col = adjustcolor(
         group_cols[g],
         alpha.f = 0.25
@@ -2405,76 +2303,64 @@ draw_scatter_panel <- function(
   }
   
   if (show_x_axis) {
-    axis(
-      1,
-      cex.axis = 0.92,
-      las = 1
-    )
+    axis(1, cex.axis = 0.65, las = 1)
   }
   
   if (show_y_axis) {
-    axis(
-      2,
-      cex.axis = 0.92,
-      las = 1
-    )
+    axis(2, cex.axis = 0.65, las = 1)
   }
 }
 
-##################################################
-## PANEL:
-## DENSITY
-##################################################
+############################################################
+# 9. DENSITY PANEL
+############################################################
 
 draw_density_panel <- function(
-    x,
-    parameter_name,
+    x, parameter_name,
     show_x_axis = FALSE,
     show_y_axis = FALSE
 ) {
   
-  levs <- levels(all_pars$Group)
+  dens_list <- list()
+  constant_values <- list()
   
-  dens_list <- lapply(
-    levs,
-    function(g) {
-      xx <- x[
-        all_pars$Group == g &
-          is.finite(x)
-      ]
-      density(
-        xx,
-        n = 512,
-        na.rm = TRUE
-      )
+  for (g in names(group_cols)) {
+    
+    xx <- x[
+      all_pars$Group == g & is.finite(x)
+    ]
+    
+    if (length(xx) < 2L) next
+    
+    if (length(unique(xx)) == 1L) {
+      constant_values[[g]] <- xx[1]
+    } else {
+      dens_list[[g]] <- density(xx, n = 512)
     }
-  )
+  }
   
-  names(dens_list) <- levs
-  
-  y_max <- max(
-    sapply(
+  y_max <- if (length(dens_list)) {
+    max(vapply(
       dens_list,
-      function(d) max(d$y)
-    )
-  )
+      function(d) max(d$y),
+      numeric(1)
+    ))
+  } else {
+    1
+  }
   
   plot(
     NA,
     xlim = param_ranges[[parameter_name]],
     ylim = c(0, y_max * 1.08),
-    xlab = "",
-    ylab = "",
+    xlab = "", ylab = "",
     axes = FALSE,
     type = "n"
   )
   
-  box(
-    col = "grey70",
-    lwd = 0.8
-  )
+  box(col = "grey70", lwd = 0.8)
   
-  for (g in levs) {
+  for (g in names(dens_list)) {
     
     d <- dens_list[[g]]
     
@@ -2489,113 +2375,91 @@ draw_density_panel <- function(
     )
     
     lines(
-      d$x,
-      d$y,
+      d$x, d$y,
       col = group_cols[g],
-      lwd = 2.6
+      lwd = 2
+    )
+  }
+  
+  for (g in names(constant_values)) {
+    abline(
+      v = constant_values[[g]],
+      col = group_cols[g],
+      lwd = 2
     )
   }
   
   if (show_x_axis) {
-    axis(
-      1,
-      cex.axis = 0.90,
-      las = 1
-    )
+    axis(1, cex.axis = 0.65, las = 1)
   }
   
   if (show_y_axis) {
-    axis(
-      2,
-      cex.axis = 0.90,
-      las = 1
-    )
+    axis(2, cex.axis = 0.65, las = 1)
   }
 }
 
-##################################################
-## PANEL:
-## CORRELATION TEXT
-##################################################
+############################################################
+# 10. CORRELATION PANEL
+############################################################
 
-draw_correlation_panel <- function(
-    x,
-    y
-) {
+draw_correlation_panel <- function(x, y) {
   
   plot(
     NA,
     xlim = c(0, 1),
     ylim = c(0, 1),
-    xlab = "",
-    ylab = "",
+    xlab = "", ylab = "",
     axes = FALSE,
     type = "n"
   )
   
-  box(
-    col = "grey75",
-    lwd = 0.7
-  )
+  box(col = "grey75", lwd = 0.7)
   
-  y_positions <- c(
-    0.84,
-    0.67,
-    0.50,
-    0.33,
-    0.16
+  levs <- names(group_cols)
+  y_positions <- seq(
+    0.84, 0.16,
+    length.out = length(levs)
   )
-  
-  levs <- levels(all_pars$Group)
   
   for (i in seq_along(levs)) {
     
     g <- levs[i]
     
-    idx <- (
-      all_pars$Group == g &
-        is.finite(x) &
-        is.finite(y)
-    )
+    idx <- all_pars$Group == g &
+      is.finite(x) & is.finite(y)
     
-    if (sum(idx) > 2) {
+    if (
+      sum(idx) > 2L &&
+      sd(x[idx]) > 0 &&
+      sd(y[idx]) > 0
+    ) {
       
-      r_value <- cor(
-        x[idx],
-        y[idx],
-        method = "pearson"
-      )
-      
-      this_label <- paste0(
+      label <- paste0(
         group_short[g],
-        "   r = ",
-        sprintf("%.2f", r_value)
+        "  r = ",
+        sprintf("%.2f", cor(x[idx], y[idx]))
       )
       
     } else {
       
-      this_label <- paste0(
-        group_short[g],
-        "   r = NA"
-      )
+      label <- paste0(group_short[g], "  --")
     }
     
     text(
-      x = 0.07,
+      x = 0.05,
       y = y_positions[i],
-      labels = this_label,
+      labels = label,
       adj = c(0, 0.5),
       col = group_cols[g],
-      cex = 1.04,
+      cex = 0.68,
       font = 2
     )
   }
 }
 
-##################################################
-## PANEL:
-## LEGEND ONLY
-##################################################
+############################################################
+# 11. BOTTOM LEGEND
+############################################################
 
 draw_bottom_legend <- function() {
   
@@ -2604,110 +2468,63 @@ draw_bottom_legend <- function() {
     xlim = c(0, 1),
     ylim = c(0, 1),
     axes = FALSE,
-    xlab = "",
-    ylab = "",
+    xlab = "", ylab = "",
     type = "n"
   )
   
-  x_positions <- c(
-    0.07,
-    0.28,
-    0.49,
-    0.70,
-    0.88
+  legend(
+    "center",
+    legend = names(group_cols),
+    col = group_cols,
+    pch = 16,
+    lty = 1,
+    lwd = 2,
+    ncol = 3,
+    bty = "n",
+    cex = 0.8
   )
-  
-  y0 <- 0.52
-  
-  text(
-    x = 0.5,
-    y = 0.90,
-    labels = "Experimental group",
-    cex = 1.18,
-    font = 2
-  )
-  
-  for (i in seq_along(group_cols)) {
-    
-    g <- names(group_cols)[i]
-    x <- x_positions[i]
-    
-    segments(
-      x0 = x - 0.045,
-      x1 = x - 0.005,
-      y0 = y0,
-      y1 = y0,
-      col = group_cols[g],
-      lwd = 3.5
-    )
-    
-    points(
-      x = x - 0.025,
-      y = y0,
-      pch = 16,
-      cex = 1.2,
-      col = group_cols[g]
-    )
-    
-    text(
-      x = x + 0.015,
-      y = y0,
-      labels = g,
-      adj = c(0, 0.5),
-      cex = 0.95,
-      font = 2
-    )
-  }
 }
 
-##################################################
-## COMPLETE FIGURE
-##################################################
+############################################################
+# 12. COMPLETE FIGURE
+############################################################
 
 draw_complete_figure <- function() {
   
-  ################################################
-  ## 5 x 5 MATRIX
-  ## + 1 FULL-WIDTH LEGEND ROW UNDERNEATH
-  ################################################
+  old_par <- par(no.readonly = TRUE)
+  
+  on.exit({
+    layout(1)
+    par(old_par)
+  }, add = TRUE)
+  
+  npar <- length(parameter_names)
   
   layout_matrix <- rbind(
     matrix(
-      1:25,
-      nrow = 5,
-      ncol = 5,
+      seq_len(npar * npar),
+      nrow = npar,
+      ncol = npar,
       byrow = TRUE
     ),
-    rep(26, 5)
+    rep(npar * npar + 1L, npar)
   )
+  
+  par(oma = c(0, 0, 2.5, 0))
   
   layout(
     layout_matrix,
-    widths = rep(1.22, 5),
-    heights = c(1, 1, 1, 1, 1, 0.42)
+    widths = rep(1, npar),
+    heights = c(rep(1, npar), 0.8)
   )
   
-  ################################################
-  ## MATRIX PANELS
-  ################################################
-  
-  for (row in 1:5) {
-    
-    for (col in 1:5) {
+  for (row in seq_len(npar)) {
+    for (col in seq_len(npar)) {
       
       par(
-        mar = c(
-          1.8,
-          1.8,
-          1.2,
-          0.5
-        ),
-        mgp = c(
-          1.35,
-          0.35,
-          0
-        ),
-        tcl = -0.20
+        mar = c(1.15, 1.15, 0.85, 0.15),
+        mgp = c(0.8, 0.2, 0),
+        tcl = -0.15
       )
       
       x_name <- parameter_names[col]
@@ -2721,8 +2538,8 @@ draw_complete_figure <- function() {
         draw_density_panel(
           x = x,
           parameter_name = x_name,
-          show_x_axis = (row == 5),
-          show_y_axis = (col == 1)
+          show_x_axis = row == npar,
+          show_y_axis = col == 1
         )
         
       } else if (row > col) {
@@ -2732,139 +2549,928 @@ draw_complete_figure <- function() {
           y = y,
           x_name = x_name,
           y_name = y_name,
-          show_x_axis = (row == 5),
-          show_y_axis = (col == 1)
+          show_x_axis = row == npar,
+          show_y_axis = col == 1
         )
         
       } else {
         
-        draw_correlation_panel(
-          x = x,
-          y = y
-        )
+        draw_correlation_panel(x, y)
       }
-      
-      ################################################
-      ## TOP LABELS
-      ################################################
       
       if (row == 1) {
         mtext(
-          parameter_labels[col],
+          parameter_labels[[x_name]],
           side = 3,
-          line = 0.22,
-          cex = 1.42,
-          font = 2
+          line = 0.12,
+          cex = 0.9
         )
       }
       
-      ################################################
-      ## LEFT LABELS
-      ################################################
-      
       if (col == 1) {
         mtext(
-          parameter_labels[row],
+          parameter_labels[[y_name]],
           side = 2,
-          line = 0.90,
-          cex = 1.42,
-          font = 2
+          line = 0.65,
+          cex = 0.9
         )
       }
     }
   }
   
-  ################################################
-  ## BOTTOM LEGEND
-  ################################################
-  
-  par(
-    mar = c(
-      0.3,
-      0.8,
-      0.5,
-      0.8
-    )
-  )
-  
+  par(mar = c(0, 0, 0, 0))
   draw_bottom_legend()
-}
-
-##################################################
-## OUTPUT FILE
-##################################################
-
-plot_file <- file.path(
-  fig_dir,
-  "corrplot_BOOST_MODEL_5_GROUPS_no_overlap.png"
-)
-
-##################################################
-## SAVE FIGURE
-##################################################
-
-png(
-  filename = plot_file,
-  width = 5000,
-  height = 3800,
-  res = 300
-)
-
-par(
-  oma = c(1, 1, 3, 1)
-)
-
-draw_complete_figure()
-
-mtext(
-  "Posterior correlations between group-level parameters",
-  side = 3,
-  outer = TRUE,
-  line = 1.0,
-  cex = 1.75,
-  font = 2
-)
-
-dev.off()
-
-##################################################
-## SHOW IN RSTUDIO
-##################################################
-
-if (interactive()) {
-  
-  dev.new(
-    width = 16,
-    height = 12
-  )
-  
-  par(
-    oma = c(1, 1, 3, 1)
-  )
-  
-  draw_complete_figure()
   
   mtext(
-    "Posterior correlations between group-level parameters",
+    "Learning + local eta + two channels + instruction",
     side = 3,
     outer = TRUE,
-    line = 1.0,
-    cex = 1.75,
+    line = 0.8,
+    cex = 1.05,
     font = 2
   )
 }
 
-##################################################
-## DONE
-##################################################
+############################################################
+# 13. DISPLAY ONLY
+############################################################
 
-cat(
-  "\n============================================\n"
+draw_complete_figure()
+
+
+
+
+
+
+
+
+
+
+
+
+
+############################################################
+# LEARNING + TWO CHANNELS + INSTRUCTION (WITHOUT LOCAL ETA)
+#
+# Diagonal: posterior densities for all five groups
+# Lower triangle: joint posterior draws
+# Upper triangle: within-group posterior correlations
+#
+# Also prints R-hat, ESS and sampler diagnostics.
+# Displays the plot only; does not save any output files.
+############################################################
+
+suppressPackageStartupMessages({
+  library(cmdstanr)
+  library(posterior)
+})
+
+# ==========================================================
+# 1. LOCATION OF SAVED FITS
+# ==========================================================
+project_dir <- path.expand("~/Documents/GitHub/reliable_info_bias")
+fits_root   <- file.path(project_dir, "stan", "results", "fits")
+fits_old    <- file.path(fits_root, "exp11_unaware")
+fits_exp12  <- file.path(fits_root, "exp12_undirected")
+
+# The new Exp12 HPC fit can be stored as learning_2channel_instr.rdata
+# in exp12_undirected. Other fits normally have group-specific names.
+# For each group, the first existing candidate is used.
+first_existing <- function(candidates, group_name) {
+  found <- candidates[file.exists(candidates)]
+  if (length(found) == 0L) {
+    stop(
+      "No fit found for ", group_name, ". Checked:\n",
+      paste(candidates, collapse = "\n"),
+      "\nEdit the candidate paths in Section 1."
+    )
+  }
+  normalizePath(found[1L], mustWork = TRUE)
+}
+
+candidate_paths <- list(
+  "Implicit Unaware" = c(
+    file.path(fits_old, "learning_2channel_instr_unaware_exp11.rdata"),
+    file.path(fits_old, "learning_2channel_instr_unaware_exp11.rds")
+  ),
+  "Implicit Aware" = c(
+    file.path(fits_old, "learning_2channel_instr_aware_exp11.rdata"),
+    file.path(fits_old, "learning_2channel_instr_aware_exp11.rds")
+  ),
+  "Explicit Undirected" = c(
+    file.path(fits_exp12, "learning_2channel_instr.rdata"),
+    file.path(fits_exp12, "learning_2channel_instr.rds"),
+    file.path(fits_old, "learning_2channel_instr_aware_exp12.rdata"),
+    file.path(fits_old, "learning_2channel_instr_aware_exp12.rds")
+  ),
+  "Explicit Truthful" = c(
+    file.path(fits_old, "learning_2channel_instr_truthful_exp13.rdata"),
+    file.path(fits_old, "learning_2channel_instr_truthful_exp13.rds")
+  ),
+  "Explicit Deceptive" = c(
+    file.path(fits_old, "learning_2channel_instr_deceptive_exp13.rdata"),
+    file.path(fits_old, "learning_2channel_instr_deceptive_exp13.rds")
+  )
 )
-cat("DONE\n")
-cat("============================================\n\n")
-cat("Plot saved to:\n\n")
-cat(
-  normalizePath(plot_file),
-  "\n\n"
+
+fit_paths <- vapply(names(candidate_paths), function(g) {
+  first_existing(candidate_paths[[g]], g)
+}, character(1))
+
+cat("\nFITS SELECTED:\n")
+print(fit_paths)
+
+# ==========================================================
+# 2. COLOURS AND LABELS
+# ==========================================================
+group_cols <- c(
+  "Implicit Unaware"     = "#F4A6A6",
+  "Implicit Aware"       = "#81C784",
+  "Explicit Undirected"  = "#E69F00",
+  "Explicit Truthful"    = "#1B5E20",
+  "Explicit Deceptive"   = "#8B1A1A"
 )
+
+group_short <- c(
+  "Implicit Unaware"     = "IU",
+  "Implicit Aware"       = "IA",
+  "Explicit Undirected"  = "EU",
+  "Explicit Truthful"    = "ET",
+  "Explicit Deceptive"   = "ED"
+)
+
+# Eight parameters. There is intentionally NO mu_eta.
+parameter_names <- c(
+  "mu_alpha", "mu_beta", "mu_delta", "mu_lambda",
+  "mu_alpha0", "mu_beta0", "mu_rho", "Delta"
+)
+
+parameter_labels <- list(
+  mu_alpha  = expression(mu[alpha]),
+  mu_beta   = expression(mu[beta]),
+  mu_delta  = expression(mu[delta]),
+  mu_lambda = expression(mu[lambda]),
+  mu_alpha0 = expression(mu[alpha[0]]),
+  mu_beta0  = expression(mu[beta[0]]),
+  mu_rho    = expression(mu[rho]),
+  Delta     = expression(Delta)
+)
+
+applicable_parameters <- function(group_name) {
+  p <- parameter_names
+  if (group_name %in% c("Implicit Unaware", "Implicit Aware")) {
+    p <- setdiff(p, c("mu_rho", "Delta"))
+  }
+  if (group_name != "Explicit Undirected") {
+    p <- setdiff(p, "Delta")
+  }
+  p
+}
+
+# ==========================================================
+# 3. LOAD FITS AND CHECK DIAGNOSTICS
+# ==========================================================
+load_fit <- function(path) {
+  if (grepl("\\.rds$", path, ignore.case = TRUE)) {
+    fit <- readRDS(path)
+  } else {
+    env <- new.env(parent = globalenv())
+    loaded <- load(path, envir = env)
+    fit_names <- loaded[vapply(loaded, function(nm) {
+      inherits(env[[nm]], "CmdStanMCMC")
+    }, logical(1))]
+    if (length(fit_names) != 1L) {
+      stop("Expected exactly one CmdStanMCMC object in: ", path)
+    }
+    fit <- env[[fit_names]]
+  }
+  if (!inherits(fit, "CmdStanMCMC")) {
+    stop("Saved object is not a CmdStanMCMC fit: ", path)
+  }
+  fit
+}
+
+all_diagnostics <- list()
+all_sampler_diagnostics <- list()
+pars_list <- list()
+
+for (g in names(fit_paths)) {
+  cat("\nLoading ", g, " ...\n", sep = "")
+  fit <- load_fit(fit_paths[[g]])
+  required <- applicable_parameters(g)
+  
+  # Read ONLY the required transformed group-level variables.
+  # Do not accidentally load the very large per-trial log_lik draws.
+  draw_array <- tryCatch(
+    fit$draws(variables = required),
+    error = function(e) stop(g, ": ", conditionMessage(e))
+  )
+  present <- posterior::variables(draw_array)
+  missing <- setdiff(required, present)
+  if (length(missing)) {
+    stop(g, " is missing: ", paste(missing, collapse = ", "),
+         "\nCheck the model file and parameter names.")
+  }
+  
+  pars <- as.data.frame(posterior::as_draws_matrix(draw_array))
+  pars <- pars[, required, drop = FALSE]
+  if (!nrow(pars) || any(!is.finite(as.matrix(pars)))) {
+    stop("Missing or non-finite posterior draws: ", g)
+  }
+  
+  # For models where rho/Delta do not apply, leave those panels empty.
+  for (p in setdiff(parameter_names, required)) pars[[p]] <- NA_real_
+  pars <- pars[, parameter_names, drop = FALSE]
+  pars$Group <- g
+  pars_list[[g]] <- pars
+  
+  diagnostics <- fit$summary(variables = required)
+  wanted <- intersect(c("variable", "mean", "rhat", "ess_bulk", "ess_tail"),
+                      names(diagnostics))
+  diagnostics <- as.data.frame(diagnostics[, wanted, drop = FALSE])
+  diagnostics$group <- g
+  all_diagnostics[[g]] <- diagnostics
+  
+  sampler <- tryCatch(fit$diagnostic_summary(), error = function(e) NULL)
+  all_sampler_diagnostics[[g]] <- sampler
+  
+  if ("rhat" %in% names(diagnostics) &&
+      any(diagnostics$rhat > 1.01, na.rm = TRUE)) {
+    warning(g, ": at least one R-hat > 1.01; do not assume convergence.")
+  }
+  if ("ess_bulk" %in% names(diagnostics) &&
+      any(diagnostics$ess_bulk < 400, na.rm = TRUE)) {
+    warning(g, ": at least one bulk ESS < 400.")
+  }
+  rm(fit, draw_array, pars)
+  gc(verbose = FALSE)
+}
+
+all_pars <- do.call(rbind, pars_list)
+rownames(all_pars) <- NULL
+all_pars$Group <- factor(all_pars$Group, levels = names(group_cols))
+
+cat("\nPOSTERIOR DRAWS PER GROUP:\n")
+print(table(all_pars$Group))
+
+cat("\nGROUP-LEVEL PARAMETER DIAGNOSTICS:\n")
+diagnostic_table <- do.call(rbind, all_diagnostics)
+rownames(diagnostic_table) <- NULL
+print(diagnostic_table, row.names = FALSE, digits = 3)
+cat("\nNOTE: Delta is fixed at 0.1 in the undirected fit; its R-hat/ESS may be NA.\n")
+
+cat("\nSAMPLER DIAGNOSTICS (when available):\n")
+for (g in names(all_sampler_diagnostics)) {
+  cat("\n", g, ":\n", sep = "")
+  if (is.null(all_sampler_diagnostics[[g]])) {
+    cat("Not available from saved fit.\n")
+  } else {
+    print(all_sampler_diagnostics[[g]])
+  }
+}
+
+# ==========================================================
+# 4. AXIS RANGES
+# ==========================================================
+param_ranges <- setNames(lapply(parameter_names, function(p) {
+  x <- all_pars[[p]]
+  x <- x[is.finite(x)]
+  if (!length(x)) stop("No finite draws for ", p)
+  lim <- range(x)
+  if (diff(lim) == 0) lim <- lim + c(-0.5, 0.5)
+  lim + c(-1, 1) * diff(lim) * 0.03
+}), parameter_names)
+
+# ==========================================================
+# 5. SCATTER, DENSITY AND CORRELATION PANELS
+# ==========================================================
+draw_scatter_panel <- function(x, y, x_name, y_name,
+                               show_x_axis = FALSE, show_y_axis = FALSE) {
+  plot(NA, xlim = param_ranges[[x_name]],
+       ylim = param_ranges[[y_name]], xlab = "", ylab = "",
+       axes = FALSE, type = "n")
+  box(col = "grey70", lwd = 0.8)
+  for (g in names(group_cols)) {
+    idx <- all_pars$Group == g & is.finite(x) & is.finite(y)
+    points(x[idx], y[idx], pch = 16, cex = 0.40,
+           col = adjustcolor(group_cols[g], alpha.f = 0.25))
+  }
+  if (show_x_axis) axis(1, cex.axis = 0.65, las = 1)
+  if (show_y_axis) axis(2, cex.axis = 0.65, las = 1)
+}
+
+draw_density_panel <- function(x, parameter_name,
+                               show_x_axis = FALSE, show_y_axis = FALSE) {
+  densities <- list()
+  constant_values <- list()
+  for (g in names(group_cols)) {
+    xx <- x[all_pars$Group == g & is.finite(x)]
+    if (length(xx) < 2L) next
+    if (length(unique(xx)) == 1L) {
+      constant_values[[g]] <- xx[1]
+    } else {
+      densities[[g]] <- density(xx, n = 512)
+    }
+  }
+  ymax <- if (length(densities)) {
+    max(vapply(densities, function(d) max(d$y), numeric(1)))
+  } else 1
+  plot(NA, xlim = param_ranges[[parameter_name]], ylim = c(0, ymax * 1.08),
+       xlab = "", ylab = "", axes = FALSE, type = "n")
+  box(col = "grey70", lwd = 0.8)
+  for (g in names(densities)) {
+    d <- densities[[g]]
+    polygon(c(d$x, rev(d$x)), c(d$y, rep(0, length(d$y))),
+            col = adjustcolor(group_cols[g], alpha.f = 0.08), border = NA)
+    lines(d$x, d$y, col = group_cols[g], lwd = 2)
+  }
+  for (g in names(constant_values)) {
+    abline(v = constant_values[[g]], col = group_cols[g], lwd = 2)
+  }
+  if (show_x_axis) axis(1, cex.axis = 0.65, las = 1)
+  if (show_y_axis) axis(2, cex.axis = 0.65, las = 1)
+}
+
+draw_correlation_panel <- function(x, y) {
+  plot(NA, xlim = c(0, 1), ylim = c(0, 1),
+       xlab = "", ylab = "", axes = FALSE, type = "n")
+  box(col = "grey75", lwd = 0.7)
+  levs <- names(group_cols)
+  y_positions <- seq(0.84, 0.16, length.out = length(levs))
+  for (i in seq_along(levs)) {
+    g <- levs[i]
+    idx <- all_pars$Group == g & is.finite(x) & is.finite(y)
+    if (sum(idx) > 2L && sd(x[idx]) > 0 && sd(y[idx]) > 0) {
+      label <- sprintf("%s  r = %.2f", group_short[g], cor(x[idx], y[idx]))
+    } else {
+      label <- paste0(group_short[g], "  --")
+    }
+    text(0.05, y_positions[i], labels = label, adj = c(0, 0.5),
+         col = group_cols[g], cex = 0.68, font = 2)
+  }
+}
+
+draw_bottom_legend <- function() {
+  plot(NA, xlim = c(0, 1), ylim = c(0, 1), xlab = "", ylab = "",
+       axes = FALSE, type = "n")
+  legend("center", legend = names(group_cols), col = group_cols,
+         pch = 16, lty = 1, lwd = 2, ncol = 3,
+         bty = "n", cex = 0.8)
+}
+
+# ==========================================================
+# 6. FULL CORRELATION MATRIX
+# ==========================================================
+draw_complete_figure <- function() {
+  old_par <- par(no.readonly = TRUE)
+  on.exit({ layout(1); par(old_par) }, add = TRUE)
+  
+  npar <- length(parameter_names)
+  layout_matrix <- rbind(
+    matrix(seq_len(npar * npar), nrow = npar, ncol = npar, byrow = TRUE),
+    rep(npar * npar + 1L, npar)
+  )
+  par(oma = c(0, 0, 2.5, 0))
+  layout(layout_matrix, widths = rep(1, npar),
+         heights = c(rep(1, npar), 0.8))
+  
+  for (row in seq_len(npar)) {
+    for (col in seq_len(npar)) {
+      par(mar = c(1.15, 1.15, 0.85, 0.15), mgp = c(0.8, 0.2, 0), tcl = -0.15)
+      x_name <- parameter_names[col]
+      y_name <- parameter_names[row]
+      x <- all_pars[[x_name]]
+      y <- all_pars[[y_name]]
+      if (row == col) {
+        draw_density_panel(x, x_name, row == npar, col == 1)
+      } else if (row > col) {
+        draw_scatter_panel(x, y, x_name, y_name, row == npar, col == 1)
+      } else {
+        draw_correlation_panel(x, y)
+      }
+      if (row == 1) {
+        mtext(parameter_labels[[x_name]], side = 3, line = 0.12, cex = 0.9)
+      }
+      if (col == 1) {
+        mtext(parameter_labels[[y_name]], side = 2, line = 0.65, cex = 0.9)
+      }
+    }
+  }
+  par(mar = c(0, 0, 0, 0))
+  draw_bottom_legend()
+  mtext("Learning + two channels + instruction (without eta)",
+        side = 3, outer = TRUE, line = 0.8, cex = 1.05, font = 2)
+}
+
+# ==========================================================
+# 47. DISPLAY THE FIGURE
+# ==========================================================
+# Expand the RStudio Plot panel or click Zoom for legibility.
+draw_complete_figure()
+
+
+
+
+
+
+
+############################################################
+# LEARNING + TWO CHANNELS + INSTRUCTION (NO LOCAL ETA)
+# PARTICIPANT-LEVEL PARAMETER CORRELATIONS
+#
+# Matches the layout of your previous Local eta + 2 channels plot:
+#   - Diagonal: densities of PARTICIPANT posterior means
+#   - Lower triangle: one point per participant, per group
+#   - Regression line ONLY when Pearson p < .05 (by default)
+#   - Upper triangle: r with *, **, *** significance stars
+#   - Same five group colours and abbreviated labels
+#
+# This is NOT the same as correlating MCMC group-level draws.
+# Here, participants (not MCMC iterations) are observations.
+#
+# No behavioural data files are needed. No files are saved.
+# Delta is fixed (0.1) and therefore omitted from correlations.
+# rho appears only for explicit groups and only if individual
+# participant rho estimates exist in the saved fit.
+############################################################
+
+suppressPackageStartupMessages({
+  library(cmdstanr)
+  library(tidyverse)
+})
+
+############################################################
+# 1. SETTINGS
+############################################################
+
+project_dir <- path.expand(
+  "~/Documents/GitHub/reliable_info_bias"
+)
+
+fits_root <- file.path(project_dir, "stan", "results", "fits")
+fits_old  <- file.path(fits_root, "exp11_unaware")
+fits_exp12 <- file.path(fits_root, "exp12_undirected")
+
+P_CUTOFF <- 0.05
+P_ADJUST <- "none"   # "none" matches your original; "BH" is optional
+OPEN_NEW_WINDOW <- FALSE
+
+stopifnot(P_ADJUST %in% c("none", "BH"))
+
+# IMPORTANT: Check the 'params[i,j]' ordering in your actual
+# learning_2channel_instr.stan model before interpreting plots.
+# This is the old two-channel order with eta removed and rho added.
+# IF THE STAN ORDER DIFFERS, EDIT THIS VECTOR.
+PARAM_INDEX_ORDER <- c(
+  "alpha", "beta", "lambda", "alpha0", "beta0", "delta", "rho"
+)
+
+# If a fit contains only six participant parameters, the script
+# assumes rho is absent; it does NOT substitute group-level mu_rho.
+
+############################################################
+# 2. GROUPS AND FIT PATHS
+############################################################
+
+groups <- tribble(
+  ~group,                 ~colour,    ~short,
+  "Implicit Unaware",    "#F4A3A3", "IU",
+  "Implicit Aware",      "#8FD694", "IA",
+  "Explicit Undirected", "#E69F00", "EU",
+  "Explicit True",       "#1B7837", "ET",
+  "Explicit Deceptive",  "#8B0000", "ED"
+)
+
+group_cols  <- setNames(groups$colour, groups$group)
+group_short <- setNames(groups$short, groups$group)
+
+# First existing file for each group is used.
+# Prefer your new HPC Exp12 model over an older Exp12 fit.
+candidate_paths <- list(
+  "Implicit Unaware" = c(
+    file.path(fits_old, "learning_2channel_instr_unaware_exp11.rdata"),
+    file.path(fits_old, "learning_2channel_instr_unaware_exp11.rds")
+  ),
+  "Implicit Aware" = c(
+    file.path(fits_old, "learning_2channel_instr_aware_exp11.rdata"),
+    file.path(fits_old, "learning_2channel_instr_aware_exp11.rds")
+  ),
+  "Explicit Undirected" = c(
+    file.path(fits_exp12, "learning_2channel_instr.rdata"),
+    file.path(fits_exp12, "learning_2channel_instr.rds"),
+    file.path(fits_old, "learning_2channel_instr_aware_exp12.rdata"),
+    file.path(fits_old, "learning_2channel_instr_aware_exp12.rds")
+  ),
+  "Explicit True" = c(
+    file.path(fits_old, "learning_2channel_instr_truthful_exp13.rdata"),
+    file.path(fits_old, "learning_2channel_instr_truthful_exp13.rds")
+  ),
+  "Explicit Deceptive" = c(
+    file.path(fits_old, "learning_2channel_instr_deceptive_exp13.rdata"),
+    file.path(fits_old, "learning_2channel_instr_deceptive_exp13.rds")
+  )
+)
+
+first_existing <- function(paths, group_name) {
+  match <- paths[file.exists(paths)]
+  if (!length(match)) {
+    stop("Fit missing for ", group_name, ". Checked:\n",
+         paste(paths, collapse = "\n"))
+  }
+  normalizePath(match[1], mustWork = TRUE)
+}
+
+fit_paths <- vapply(
+  names(candidate_paths),
+  function(g) first_existing(candidate_paths[[g]], g),
+  character(1)
+)
+
+cat("\nUSING THESE FIT FILES:\n")
+print(fit_paths)
+
+############################################################
+# 3. PARAMETER ORDER AND LABELS
+############################################################
+
+plot_order <- c(
+  "alpha", "beta", "delta", "lambda", "alpha0", "beta0", "rho"
+)
+
+plot_labels <- list(
+  alpha  = expression(alpha),
+  beta   = expression(beta),
+  delta  = expression(delta),
+  lambda = expression(lambda),
+  alpha0 = expression(alpha[0]),
+  beta0  = expression(beta[0]),
+  rho    = expression(rho)
+)
+
+mu_names <- c(
+  alpha = "mu_alpha", beta = "mu_beta",
+  lambda = "mu_lambda", alpha0 = "mu_alpha0",
+  beta0 = "mu_beta0", delta = "mu_delta", rho = "mu_rho"
+)
+
+############################################################
+# 4. LOAD AND EXTRACT PARTICIPANT ESTIMATES
+############################################################
+
+load_fit <- function(path) {
+  if (grepl("\\.rds$", path, ignore.case = TRUE)) {
+    fit <- readRDS(path)
+  } else {
+    env <- new.env(parent = globalenv())
+    loaded <- load(path, envir = env)
+    nm <- loaded[vapply(loaded, function(z) {
+      inherits(env[[z]], "CmdStanMCMC")
+    }, logical(1))]
+    if (length(nm) != 1L) {
+      stop("Expected one CmdStanMCMC fit in: ", path)
+    }
+    fit <- env[[nm]]
+  }
+  if (!inherits(fit, "CmdStanMCMC")) {
+    stop("Not a CmdStanMCMC object: ", path)
+  }
+  fit
+}
+
+extract_participants <- function(group_name, path) {
+  cat("\nLoading: ", group_name, "\n", sep = "")
+  fit <- load_fit(path)
+  
+  # Already-transformed individual parameters (no raw mu_pr guessing).
+  smry <- as_tibble(fit$summary(variables = "params"))
+  if (!all(c("variable", "mean") %in% names(smry))) {
+    stop(group_name, ": missing variable/mean in params summary")
+  }
+  
+  ind <- stringr::str_match(smry$variable, "^params\\[([0-9]+),([0-9]+)\\]$")
+  smry <- smry %>%
+    mutate(
+      person = as.integer(ind[, 2]),
+      index  = as.integer(ind[, 3])
+    ) %>%
+    filter(!is.na(person), !is.na(index))
+  
+  if (!nrow(smry)) {
+    stop(group_name, ": couldn't find params[person,index] in the fit")
+  }
+  
+  indices <- sort(unique(smry$index))
+  if (!identical(indices, seq_along(indices)) ||
+      !length(indices) %in% c(6L, 7L)) {
+    stop(group_name, ": unexpected params indices: ",
+         paste(indices, collapse = ", "),
+         ". Check Stan's generated quantities.")
+  }
+  
+  expected_n <- length(unique(smry$person)) * length(indices)
+  if (nrow(smry) != expected_n || anyDuplicated(smry$variable)) {
+    stop(group_name, ": incomplete/duplicate participant parameter grid")
+  }
+  
+  if (any(!is.finite(smry$mean))) {
+    stop(group_name, ": non-finite participant posterior estimates")
+  }
+  
+  # NOTE: verify the order above against the Stan generated-quantities code.
+  smry <- smry %>%
+    mutate(parameter = PARAM_INDEX_ORDER[index])
+  
+  diagnostics <- smry %>%
+    summarise(
+      n_participants = n_distinct(person),
+      max_rhat = if ("rhat" %in% names(smry))
+        suppressWarnings(max(rhat, na.rm = TRUE)) else NA_real_,
+      min_bulk_ess = if ("ess_bulk" %in% names(smry))
+        suppressWarnings(min(ess_bulk, na.rm = TRUE)) else NA_real_,
+      .groups = "drop"
+    ) %>%
+    mutate(group = group_name, .before = 1)
+  
+  if (is.infinite(diagnostics$max_rhat)) diagnostics$max_rhat <- NA_real_
+  if (is.infinite(diagnostics$min_bulk_ess)) diagnostics$min_bulk_ess <- NA_real_
+  
+  if (is.finite(diagnostics$max_rhat) && diagnostics$max_rhat > 1.01) {
+    warning(group_name, ": participant-parameter R-hat > 1.01. Interpret cautiously.")
+  }
+  if (is.finite(diagnostics$min_bulk_ess) && diagnostics$min_bulk_ess < 400) {
+    warning(group_name, ": some participant parameters have bulk ESS < 400.")
+  }
+  
+  p <- smry %>%
+    select(person, parameter, value = mean) %>%
+    pivot_wider(names_from = parameter, values_from = value) %>%
+    arrange(person)
+  
+  # Only explicit groups have meaningful instruction trust in this task.
+  if (group_name %in% c("Implicit Unaware", "Implicit Aware")) {
+    p$rho <- NA_real_
+  }
+  for (z in plot_order) if (!z %in% names(p)) p[[z]] <- NA_real_
+  
+  # Check against group-level means to catch obvious parameter-index mistakes.
+  # This is an advisory check (hierarchical group means need not equal
+  # participant sample means exactly).
+  mu_available <- tryCatch(
+    posterior::variables(fit$draws(variables = unname(mu_names))),
+    error = function(e) character()
+  )
+  present_mu <- intersect(unname(mu_names), mu_available)
+  if (length(present_mu)) {
+    mu_summ <- fit$summary(variables = present_mu)
+    cat("Group-level means vs individual posterior means (check mapping):\n")
+    for (z in names(mu_names)) {
+      mz <- mu_names[[z]]
+      if (mz %in% mu_summ$variable && any(is.finite(p[[z]]))) {
+        mgroup <- mu_summ$mean[match(mz, mu_summ$variable)]
+        mind <- mean(p[[z]], na.rm = TRUE)
+        cat(sprintf("  %-7s group mu = %7.3f; mean participant = %7.3f\n",
+                    z, mgroup, mind))
+      }
+    }
+  }
+  
+  cat("Participants: ", nrow(p), "; params per person: ",
+      length(indices), "\n", sep = "")
+  
+  rm(fit)
+  list(
+    data = p %>% mutate(group = group_name, .before = 1),
+    diagnostics = diagnostics
+  )
+}
+
+results <- purrr::imap(fit_paths, ~extract_participants(.y, .x))
+participant_data <- bind_rows(purrr::map(results, "data")) %>%
+  mutate(group = factor(group, levels = groups$group))
+
+diagnostic_table <- bind_rows(purrr::map(results, "diagnostics"))
+cat("\nPARTICIPANT-LEVEL SAMPLING DIAGNOSTICS:\n")
+print(diagnostic_table, n = Inf, width = Inf)
+
+# Remove rho altogether if it is unavailable for all explicit groups.
+if (!any(is.finite(participant_data$rho))) {
+  plot_order <- setdiff(plot_order, "rho")
+  message("No participant-specific rho was found; omitting its panel.")
+}
+
+############################################################
+# 5. PEARSON CORRELATIONS, SIGNIFICANCE STARS
+############################################################
+
+significance_stars <- function(p) {
+  if (length(p) != 1L || !is.finite(p)) return("")
+  if (p < .001) "***" else if (p < .01) "**" else if (p < .05) "*" else ""
+}
+
+pairs_to_test <- as_tibble(
+  t(combn(plot_order, 2)), .name_repair = "minimal"
+)
+names(pairs_to_test) <- c("xvar", "yvar")
+
+one_test <- function(group_name, xvar, yvar) {
+  d <- participant_data %>%
+    filter(as.character(group) == group_name) %>%
+    transmute(x = .data[[xvar]], y = .data[[yvar]]) %>%
+    filter(is.finite(x), is.finite(y))
+  
+  if (nrow(d) < 4L || sd(d$x) == 0 || sd(d$y) == 0) {
+    return(tibble(group = group_name, xvar = xvar, yvar = yvar,
+                  n = nrow(d), r = NA_real_, p = NA_real_))
+  }
+  
+  t <- suppressWarnings(cor.test(d$x, d$y, method = "pearson"))
+  tibble(group = group_name, xvar = xvar, yvar = yvar,
+         n = nrow(d), r = unname(t$estimate), p = t$p.value)
+}
+
+correlation_results <- purrr::map_dfr(
+  seq_len(nrow(pairs_to_test)), function(i) {
+    purrr::map_dfr(groups$group, function(g) {
+      one_test(g, pairs_to_test$xvar[i], pairs_to_test$yvar[i])
+    })
+  }
+) %>%
+  mutate(
+    p_BH = p.adjust(p, method = "BH"),
+    p_used = if (P_ADJUST == "BH") p_BH else p,
+    significant = !is.na(p_used) & p_used < P_CUTOFF,
+    stars = vapply(p_used, significance_stars, character(1))
+  )
+
+cat("\nSIGNIFICANT PARTICIPANT-LEVEL CORRELATIONS:\n")
+print(correlation_results %>% filter(significant), n = Inf, width = Inf)
+
+lookup_test <- function(g, xvar, yvar) {
+  i <- correlation_results$group == g & (
+    (correlation_results$xvar == xvar & correlation_results$yvar == yvar) |
+      (correlation_results$xvar == yvar & correlation_results$yvar == xvar)
+  )
+  correlation_results[i, , drop = FALSE]
+}
+
+correlation_label <- function(g, xvar, yvar) {
+  stat <- lookup_test(g, xvar, yvar)
+  if (nrow(stat) != 1 || !is.finite(stat$r)) {
+    return(paste0(group_short[g], "  --"))
+  }
+  paste0(group_short[g], "  r = ", sprintf("%.2f", stat$r), stat$stars)
+}
+
+############################################################
+# 6. PLOTTING HELPERS (MATCH YOUR EXAMPLE)
+############################################################
+
+finite_range <- function(x, padding = .04) {
+  x <- x[is.finite(x)]
+  if (!length(x)) return(c(0, 1))
+  lim <- range(x)
+  if (diff(lim) == 0) lim <- lim + c(-.5, .5)
+  lim + c(-1, 1) * diff(lim) * padding
+}
+
+variable_ranges <- setNames(
+  lapply(plot_order, function(z) finite_range(participant_data[[z]])),
+  plot_order
+)
+
+get_group_xy <- function(g, xvar, yvar) {
+  participant_data %>%
+    filter(as.character(group) == g) %>%
+    transmute(x = .data[[xvar]], y = .data[[yvar]]) %>%
+    filter(is.finite(x), is.finite(y))
+}
+
+draw_group_scatter <- function(xvar, yvar, point_size = .75) {
+  for (g in groups$group) {
+    d <- get_group_xy(g, xvar, yvar)
+    if (!nrow(d)) next
+    points(d$x, d$y, pch = 16, cex = point_size,
+           col = adjustcolor(group_cols[g], alpha.f = .65))
+    
+    stat <- lookup_test(g, xvar, yvar)
+    if (nrow(stat) == 1 && isTRUE(stat$significant)) {
+      regression <- lm(y ~ x, data = d)
+      xx <- range(d$x)
+      lines(xx,
+            predict(regression, newdata = data.frame(x = xx)),
+            col = group_cols[g], lwd = 2)
+    }
+  }
+}
+
+draw_density <- function(xvar) {
+  dl <- setNames(lapply(groups$group, function(g) {
+    x <- participant_data[[xvar]][participant_data$group == g]
+    x <- x[is.finite(x)]
+    if (length(x) < 2L || sd(x) == 0) return(NULL)
+    density(x, n = 256)
+  }), groups$group)
+  
+  ymax <- max(1e-6, vapply(dl, function(d) {
+    if (is.null(d)) 0 else max(d$y)
+  }, numeric(1)))
+  plot(NA, xlim = variable_ranges[[xvar]],
+       ylim = c(0, 1.05 * ymax),
+       axes = FALSE, xlab = "", ylab = "", type = "n")
+  
+  for (g in groups$group) {
+    d <- dl[[g]]
+    if (!is.null(d)) {
+      polygon(c(d$x, rev(d$x)), c(d$y, rep(0, length(d$y))),
+              col = adjustcolor(group_cols[g], alpha.f = .08),
+              border = NA)
+      lines(d$x, d$y, col = group_cols[g], lwd = 1.8)
+    } else {
+      x <- participant_data[[xvar]][participant_data$group == g]
+      x <- x[is.finite(x)]
+      if (length(x)) abline(v = x[1], col = group_cols[g], lwd = 1.6)
+    }
+  }
+}
+
+draw_correlation_labels <- function(xvar, yvar) {
+  plot(NA, xlim = c(0, 1), ylim = c(0, 1),
+       axes = FALSE, xlab = "", ylab = "", type = "n")
+  y_pos <- seq(.86, .14, length.out = nrow(groups))
+  for (i in seq_len(nrow(groups))) {
+    g <- groups$group[i]
+    text(.04, y_pos[i], correlation_label(g, xvar, yvar),
+         adj = 0, col = group_cols[g], cex = .78, font = 2)
+  }
+}
+
+draw_bottom_legend <- function() {
+  par(mar = c(0, 0, 0, 0))
+  plot.new()
+  legend("center", legend = groups$group,
+         col = group_cols, pch = 16, lty = 1, lwd = 2,
+         ncol = 5, bty = "n", cex = .83)
+}
+
+############################################################
+# 7. COMPLETE FIGURE
+############################################################
+
+plot_parameter_pairs <- function() {
+  if (OPEN_NEW_WINDOW && interactive()) dev.new(width = 16, height = 14)
+  op <- par(no.readonly = TRUE)
+  on.exit({ layout(1); par(op) }, add = TRUE)
+  
+  k <- length(plot_order)
+  layout(rbind(
+    matrix(seq_len(k * k), nrow = k, ncol = k, byrow = TRUE),
+    rep(k * k + 1L, k)
+  ), heights = c(rep(1, k), .5))
+  
+  par(oma = c(0, 1, 3, 0))
+  for (row in seq_len(k)) {
+    for (column in seq_len(k)) {
+      xvar <- plot_order[column]
+      yvar <- plot_order[row]
+      par(mar = c(1.5, 1.6, 1.1, .3), mgp = c(1, .25, 0), tcl = -.15)
+      
+      if (row == column) {
+        draw_density(xvar)
+      } else if (row > column) {
+        plot(NA, xlim = variable_ranges[[xvar]],
+             ylim = variable_ranges[[yvar]],
+             axes = FALSE, xlab = "", ylab = "", type = "n")
+        draw_group_scatter(xvar, yvar)
+      } else {
+        draw_correlation_labels(xvar, yvar)
+      }
+      
+      box(col = "grey75", lwd = .6)
+      if (row == k) axis(1, cex.axis = .7, las = 1)
+      if (column == 1L) axis(2, cex.axis = .7, las = 1)
+      if (row == 1L) mtext(plot_labels[[xvar]], side = 3, line = .2, cex = 1)
+      if (column == 1L) mtext(plot_labels[[yvar]], side = 2, line = 1.1, cex = 1)
+    }
+  }
+  
+  draw_bottom_legend()
+  mtext("Learning + 2 channels + instruction: parameter relationships",
+        side = 3, outer = TRUE, line = 1.6, cex = 1.2, font = 2)
+  mtext(paste0(
+    "One dot per participant | Lines: ",
+    if (P_ADJUST == "BH") "BH-adjusted" else "uncorrected",
+    " p < ", P_CUTOFF, " | * p < .05, ** p < .01, *** p < .001"
+  ), side = 3, outer = TRUE, line = .5, cex = .85)
+  invisible(NULL)
+}
+
+plot_parameter_pairs()
+
+# Useful console objects:
+# View(correlation_results)
+# View(participant_data)
+# View(diagnostic_table)
+# Re-display: plot_parameter_pairs()
+
+cat("\nDone. Figure displayed; no output files saved.\n")
+

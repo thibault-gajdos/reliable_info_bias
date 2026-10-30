@@ -421,3 +421,314 @@ ggsave(
   limitsize = FALSE
 )
 
+
+
+
+
+
+
+rm(list = ls(all = TRUE))
+
+library(tidyverse)
+
+##################################################
+## SETTINGS
+##################################################
+
+project_folder <- "/Users/bty615/Documents/GitHub/reliable_info_bias"
+
+output_folder <- file.path(
+  project_folder,
+  "stan/results/simulations/alpha0_beta0_curves"
+)
+
+dir.create(
+  output_folder,
+  recursive = TRUE,
+  showWarnings = FALSE
+)
+
+# Same range of learned beliefs for every curve.
+vb_values <- sort(unique(c(
+  seq(0.01, 0.99, length.out = 301),
+  0.50,
+  0.65
+)))
+
+alpha0_values <- c(0.25, 0.50, 1, 2)
+beta0_values <- c(-1, -0.50, 0, 0.50, 1)
+
+fixed_beta0 <- 0
+fixed_alpha0 <- 1
+
+##################################################
+## PRIOR TRANSFORMATION FROM YOUR MODEL
+##
+## P = alpha0 * logit(Vb) + beta0
+##
+## plogis(P) expresses this prior contribution
+## on a probability scale.
+## It does not change the underlying Vb.
+##################################################
+
+prior_probability <- function(Vb, alpha0, beta0) {
+  
+  Vb_safe <- pmin(pmax(Vb, 0.001), 0.999)
+  
+  plogis(
+    alpha0 * qlogis(Vb_safe) + beta0
+  )
+}
+
+##################################################
+## VARY ALPHA0
+##################################################
+
+alpha0_data <- expand_grid(
+  Vb = vb_values,
+  alpha0 = alpha0_values
+) %>%
+  mutate(
+    beta0 = fixed_beta0,
+    prior_probability = prior_probability(Vb, alpha0, beta0),
+    curve = factor(
+      alpha0,
+      levels = alpha0_values,
+      labels = c("0.25", "0.50", "1.00", "2.00")
+    )
+  )
+
+##################################################
+## VARY BETA0
+##################################################
+
+beta0_data <- expand_grid(
+  Vb = vb_values,
+  beta0 = beta0_values
+) %>%
+  mutate(
+    alpha0 = fixed_alpha0,
+    prior_probability = prior_probability(Vb, alpha0, beta0),
+    curve = factor(
+      beta0,
+      levels = beta0_values,
+      labels = c("-1.00", "-0.50", "0.00", "0.50", "1.00")
+    )
+  )
+
+##################################################
+## CHECK CALCULATIONS
+##################################################
+
+stopifnot(
+  all(is.finite(alpha0_data$prior_probability)),
+  all(is.finite(beta0_data$prior_probability)),
+  
+  # Identity transformation: alpha0 = 1, beta0 = 0.
+  max(abs(
+    prior_probability(vb_values, 1, 0) - vb_values
+  )) < 1e-12,
+  
+  # With beta0 = 0, a neutral belief remains neutral.
+  all(abs(
+    prior_probability(0.5, alpha0_values, 0) - 0.5
+  ) < 1e-12)
+)
+
+##################################################
+## PLOT 1: ALPHA0
+##################################################
+
+alpha0_plot <- ggplot(
+  alpha0_data,
+  aes(
+    x = Vb,
+    y = prior_probability,
+    colour = curve
+  )
+) +
+  geom_abline(
+    intercept = 0,
+    slope = 1,
+    linetype = "dashed",
+    colour = "grey65"
+  ) +
+  geom_vline(
+    xintercept = 0.5,
+    linetype = "dotted",
+    colour = "grey70"
+  ) +
+  geom_hline(
+    yintercept = 0.5,
+    linetype = "dotted",
+    colour = "grey70"
+  ) +
+  geom_line(linewidth = 1.2) +
+  scale_colour_manual(
+    values = c(
+      "0.25" = "#E69F00",
+      "0.50" = "#009E73",
+      "1.00" = "#666666",
+      "2.00" = "#0072B2"
+    )
+  ) +
+  scale_x_continuous(
+    limits = c(0, 1),
+    breaks = seq(0, 1, 0.25)
+  ) +
+  scale_y_continuous(
+    limits = c(0, 1),
+    breaks = seq(0, 1, 0.25)
+  ) +
+  coord_equal() +
+  labs(
+    x = "Learned belief: Vb",
+    y = "Prior contribution on a probability scale",
+    colour = "alpha0",
+    title = "Changing alpha0",
+    subtitle = "beta0 fixed at 0",
+    caption = "Diagonal = unchanged belief. Below 0.50 favours red; above 0.50 favours blue."
+  ) +
+  theme_bw(base_size = 14) +
+  theme(
+    legend.position = "bottom",
+    panel.grid.minor = element_blank(),
+    plot.caption = element_text(size = 10)
+  )
+
+##################################################
+## PLOT 2: BETA0
+##################################################
+
+beta0_plot <- ggplot(
+  beta0_data,
+  aes(
+    x = Vb,
+    y = prior_probability,
+    colour = curve
+  )
+) +
+  geom_abline(
+    intercept = 0,
+    slope = 1,
+    linetype = "dashed",
+    colour = "grey65"
+  ) +
+  geom_vline(
+    xintercept = 0.5,
+    linetype = "dotted",
+    colour = "grey70"
+  ) +
+  geom_hline(
+    yintercept = 0.5,
+    linetype = "dotted",
+    colour = "grey70"
+  ) +
+  geom_line(linewidth = 1.2) +
+  scale_colour_manual(
+    values = c(
+      "-1.00" = "#B2182B",
+      "-0.50" = "#EF8A62",
+      "0.00" = "#666666",
+      "0.50" = "#67A9CF",
+      "1.00" = "#2166AC"
+    )
+  ) +
+  scale_x_continuous(
+    limits = c(0, 1),
+    breaks = seq(0, 1, 0.25)
+  ) +
+  scale_y_continuous(
+    limits = c(0, 1),
+    breaks = seq(0, 1, 0.25)
+  ) +
+  coord_equal() +
+  labs(
+    x = "Learned belief: Vb",
+    y = "Prior contribution on a probability scale",
+    colour = "beta0",
+    title = "Changing beta0",
+    subtitle = "alpha0 fixed at 1",
+    caption = "Diagonal = unchanged belief. Below 0.50 favours red; above 0.50 favours blue."
+  ) +
+  theme_bw(base_size = 14) +
+  theme(
+    legend.position = "bottom",
+    panel.grid.minor = element_blank(),
+    plot.caption = element_text(size = 10)
+  )
+
+##################################################
+## DISPLAY PLOTS
+##################################################
+
+print(alpha0_plot)
+print(beta0_plot)
+
+##################################################
+## SAVE PLOTS
+##################################################
+
+ggsave(
+  filename = file.path(output_folder, "vary_alpha0.png"),
+  plot = alpha0_plot,
+  width = 8,
+  height = 7,
+  dpi = 300
+)
+
+ggsave(
+  filename = file.path(output_folder, "vary_beta0.png"),
+  plot = beta0_plot,
+  width = 8,
+  height = 7,
+  dpi = 300
+)
+
+# Two-page PDF containing both plots.
+pdf(
+  file = file.path(output_folder, "alpha0_beta0_curves.pdf"),
+  width = 8,
+  height = 7
+)
+
+print(alpha0_plot)
+print(beta0_plot)
+
+dev.off()
+
+##################################################
+## SAVE VALUES
+##################################################
+
+write_csv(
+  alpha0_data %>% select(-curve),
+  file.path(output_folder, "vary_alpha0.csv")
+)
+
+write_csv(
+  beta0_data %>% select(-curve),
+  file.path(output_folder, "vary_beta0.csv")
+)
+
+##################################################
+## EXAMPLE: HOLD VB AT 0.65
+##################################################
+
+cat("\nChanging alpha0 with Vb = 0.65 and beta0 = 0:\n")
+
+print(
+  alpha0_data %>%
+    filter(Vb == 0.65) %>%
+    select(Vb, alpha0, beta0, prior_probability)
+)
+
+cat("\nChanging beta0 with Vb = 0.65 and alpha0 = 1:\n")
+
+print(
+  beta0_data %>%
+    filter(Vb == 0.65) %>%
+    select(Vb, alpha0, beta0, prior_probability)
+)
+
+cat("\nFiles saved to:\n", output_folder, "\n")
